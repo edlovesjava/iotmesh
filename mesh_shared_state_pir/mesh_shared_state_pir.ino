@@ -139,7 +139,7 @@ void setup() {
       display.printf("idle %lus ago\n", secSinceMotion);
     }
 
-    display.println("------------------------");
+    display.println("---------------------");
 
     // Show state
     display.printf("motion=%s\n", motionActive ? "1" : "0");

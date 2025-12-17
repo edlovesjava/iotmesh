@@ -454,7 +454,7 @@ void MeshSwarm::updateDisplay() {
   if (customStatus.length() > 0) {
     display.println(customStatus.substring(0, 21));
   } else {
-    display.println("------------------------");
+    display.println("---------------------");
   }
 
   // Call custom display handlers (lines 4+)

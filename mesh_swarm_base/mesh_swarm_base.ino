@@ -358,7 +358,7 @@ void updateDisplay() {
                  mins, secs);
   
   // Line 2: Separator
-  display.println("------------------------");
+  display.println("---------------------");
   
   // Line 3: Peer count
   int alivePeers = 0;
@@ -396,7 +396,7 @@ void updateDisplay() {
   else display.println();
   
   // Line 6-7: Last message or status
-  display.println("------------------------");
+  display.println("---------------------");
   if (lastMessage.length() > 0) {
     display.printf("Last: %s\n", lastMessage.substring(0, 20).c_str());
   } else {

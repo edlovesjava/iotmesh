@@ -40,7 +40,7 @@ void setup() {
     bool ledOn = (ledState == "1");
 
     display.println("Mode: LED OUTPUT");
-    display.println("------------------------");
+    display.println("---------------------");
     display.printf("led=%s\n", ledState.c_str());
     display.println();
     display.printf("LED is: %s\n", ledOn ? "ON" : "OFF");

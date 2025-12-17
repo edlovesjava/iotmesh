@@ -54,7 +54,7 @@ void setup() {
   // Custom display
   swarm.onDisplayUpdate([](Adafruit_SSD1306& display, int startLine) {
     display.println("Mode: BUTTON");
-    display.println("------------------------");
+    display.println("---------------------");
     display.printf("led=%s\n", swarm.getState("led", "0").c_str());
     display.println();
     display.println("Press button to toggle");

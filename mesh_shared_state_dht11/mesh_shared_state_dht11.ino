@@ -127,7 +127,7 @@ void setup() {
       display.printf("%.1fC %.0f%%\n", temperature, humidity);
     }
 
-    display.println("------------------------");
+    display.println("---------------------");
 
     // Show state values
     if (sensorReady) {
