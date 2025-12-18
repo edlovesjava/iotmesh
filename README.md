@@ -17,6 +17,57 @@ This project implements a mesh network where multiple ESP32 nodes can discover e
 - **OLED display**: Real-time status display on each node
 - **Serial console**: Debug and control nodes via serial commands
 
+## MeshSwarm Library
+
+All sketch variants are built on the **MeshSwarm** library, which encapsulates the mesh networking, shared state, display, and serial command functionality. This reduces each sketch from ~680 lines to 34-150 lines.
+
+### Library Features
+
+- `begin()` / `update()` - Initialize and run the mesh
+- `setState()` / `getState()` - Read/write shared state
+- `watchState()` - Register callbacks for state changes
+- Built-in OLED display with customizable sections
+- Built-in serial command interface
+- Extensible via hooks: `onLoop()`, `onSerialCommand()`, `onDisplayUpdate()`
+
+### Installation
+
+Copy the `MeshSwarm/` folder to your Arduino libraries directory:
+
+```bash
+# macOS
+cp -r MeshSwarm ~/Documents/Arduino/libraries/
+
+# Linux
+cp -r MeshSwarm ~/Arduino/libraries/
+
+# Windows
+# Copy MeshSwarm folder to Documents\Arduino\libraries\
+```
+
+Restart Arduino IDE after copying.
+
+### Basic Usage
+
+```cpp
+#include <MeshSwarm.h>
+
+MeshSwarm swarm;
+
+void setup() {
+  swarm.begin();
+
+  // Watch for state changes
+  swarm.watchState("led", [](const String& key, const String& value, const String& oldValue) {
+    digitalWrite(LED_PIN, value == "1" ? HIGH : LOW);
+  });
+}
+
+void loop() {
+  swarm.update();
+}
+```
+
 ## Hardware Requirements
 
 - ESP32 (original dual-core recommended)
@@ -167,12 +218,14 @@ swarm.watchState("*", [](const String& key, const String& value, const String& o
 
 ## Quick Start
 
-1. Install required libraries in Arduino IDE
-2. Select "ESP32 Dev Module" as your board
-3. Flash `mesh_shared_state_button` to one ESP32
-4. Flash `mesh_shared_state_led` to another ESP32
-5. Power on both nodes - they will auto-discover each other
-6. Press the button on the button node - the LED on the LED node will toggle
+1. Install required libraries in Arduino IDE (Library Manager)
+2. Copy `MeshSwarm/` folder to your Arduino libraries directory (see Installation above)
+3. Restart Arduino IDE
+4. Select "ESP32 Dev Module" as your board
+5. Flash `mesh_shared_state_button` to one ESP32
+6. Flash `mesh_shared_state_led` to another ESP32
+7. Power on both nodes - they will auto-discover each other
+8. Press the button on the button node - the LED on the LED node will toggle
 
 ## Serial Commands
 
@@ -222,12 +275,62 @@ When multiple nodes update the same key:
 
 This ensures all nodes converge to the same state without requiring a central authority.
 
+## MeshSwarm API Reference
+
+### Core Methods
+
+| Method | Description |
+|--------|-------------|
+| `begin()` | Initialize mesh with default settings |
+| `begin(prefix, password, port)` | Initialize with custom network settings |
+| `update()` | Process mesh events (call in `loop()`) |
+
+### State Management
+
+| Method | Description |
+|--------|-------------|
+| `setState(key, value)` | Set a shared state value, broadcasts to mesh |
+| `getState(key)` | Get current value for a key |
+| `getState(key, default)` | Get value with default if not found |
+| `watchState(key, callback)` | Register callback for state changes |
+| `watchState("*", callback)` | Watch all state changes (wildcard) |
+| `broadcastFullState()` | Send full state to all peers |
+| `requestStateSync()` | Request state from peers |
+
+### Node Information
+
+| Method | Description |
+|--------|-------------|
+| `getNodeId()` | Get this node's unique mesh ID |
+| `getNodeName()` | Get human-readable node name |
+| `getRole()` | Get role ("COORD" or "NODE") |
+| `isCoordinator()` | Check if this node is coordinator |
+| `getPeerCount()` | Get number of connected peers |
+| `getPeers()` | Get map of all known peers |
+
+### Customization Hooks
+
+| Method | Description |
+|--------|-------------|
+| `onLoop(callback)` | Register function to call each loop iteration |
+| `onSerialCommand(handler)` | Add custom serial command handler |
+| `onDisplayUpdate(handler)` | Add custom OLED display section |
+| `setStatusLine(text)` | Set custom status line on display |
+| `setHeartbeatData(key, value)` | Add custom data to heartbeat messages |
+
+### Advanced Access
+
+| Method | Description |
+|--------|-------------|
+| `getMesh()` | Access underlying painlessMesh object |
+| `getDisplay()` | Access Adafruit_SSD1306 display object |
+
 ## Extending the Project
 
 ### Adding a New State Watcher
 
 ```cpp
-watchState("mykey", [](const String& key, const String& value, const String& oldValue) {
+swarm.watchState("mykey", [](const String& key, const String& value, const String& oldValue) {
   Serial.printf("mykey changed: %s -> %s\n", oldValue.c_str(), value.c_str());
   // React to the change
 });
@@ -236,9 +339,37 @@ watchState("mykey", [](const String& key, const String& value, const String& old
 ### Adding Sensor Data
 
 ```cpp
-// In loop(), periodically:
-float temp = readTemperature();
-setState("temp", String(temp));
+// Register a polling function
+swarm.onLoop([]() {
+  static unsigned long lastRead = 0;
+  if (millis() - lastRead > 5000) {
+    lastRead = millis();
+    float temp = readTemperature();
+    swarm.setState("temp", String(temp));
+  }
+});
+```
+
+### Adding Custom Serial Commands
+
+```cpp
+swarm.onSerialCommand([](const String& input) -> bool {
+  if (input == "mycommand") {
+    Serial.println("My command executed!");
+    return true;  // Command handled
+  }
+  return false;  // Not our command
+});
+```
+
+### Adding Custom Display Section
+
+```cpp
+swarm.onDisplayUpdate([](Adafruit_SSD1306& display, int startLine) {
+  display.println("---------------------");
+  display.println("My custom data:");
+  display.printf("Value: %d\n", myValue);
+});
 ```
 
 ### Wildcard Watcher
@@ -246,7 +377,7 @@ setState("temp", String(temp));
 Watch all state changes:
 
 ```cpp
-watchState("*", [](const String& key, const String& value, const String& oldValue) {
+swarm.watchState("*", [](const String& key, const String& value, const String& oldValue) {
   Serial.printf("Any state: %s = %s\n", key.c_str(), value.c_str());
 });
 ```
