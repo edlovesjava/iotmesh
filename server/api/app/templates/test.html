@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mesh Manager - Test Console</title>
+    <style>
+        body { font-family: monospace; max-width: 900px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
+        h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
+        h2 { color: #555; margin-top: 30px; }
+        .section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; background: white; border-radius: 8px; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 4px; }
+        button:hover { background: #45a049; }
+        button.secondary { background: #2196F3; }
+        button.secondary:hover { background: #1976D2; }
+        pre { background: #263238; color: #aed581; padding: 15px; overflow-x: auto; border-radius: 4px; max-height: 300px; }
+        input, textarea { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; }
+        textarea { resize: vertical; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f5f5f5; }
+        .status { padding: 4px 10px; border-radius: 12px; font-size: 12px; }
+        .online { background: #c8e6c9; color: #2e7d32; }
+        .offline { background: #ffcdd2; color: #c62828; }
+        .info { background: #e3f2fd; padding: 10px; border-radius: 4px; margin-bottom: 15px; }
+        .error { background: #ffebee; color: #c62828; padding: 10px; border-radius: 4px; }
+        .success { background: #e8f5e9; color: #2e7d32; padding: 10px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>Mesh Manager - Test Console</h1>
+    <p class="info">Use this page to test the API. Push telemetry data, view nodes, and monitor state.</p>
+
+    <div class="section">
+        <h2>Push Test Telemetry</h2>
+        <input type="text" id="nodeId" placeholder="Node ID (e.g., abc123)" value="test001">
+        <textarea id="telemetryData" rows="12">{
+  "uptime": 3600,
+  "heap_free": 245000,
+  "peer_count": 2,
+  "role": "NODE",
+  "firmware": "1.0.0",
+  "state": {
+    "led": "1",
+    "temp": "23.5"
+  }
+}</textarea>
+        <button onclick="pushTelemetry()">Push Telemetry</button>
+        <button class="secondary" onclick="randomizeTelemetry()">Randomize Values</button>
+        <pre id="pushResult">Response will appear here...</pre>
+    </div>
+
+    <div class="section">
+        <h2>Nodes</h2>
+        <button onclick="loadNodes()">Refresh Nodes</button>
+        <div id="nodeList"></div>
+    </div>
+
+    <div class="section">
+        <h2>Current State</h2>
+        <button onclick="loadState()">Refresh State</button>
+        <pre id="stateData">Loading...</pre>
+    </div>
+
+    <div class="section">
+        <h2>API Info</h2>
+        <p><strong>Swagger Docs:</strong> <a href="/docs" target="_blank">/docs</a></p>
+        <p><strong>Health Check:</strong> <a href="/health" target="_blank">/health</a></p>
+        <h3>curl Examples:</h3>
+        <pre># Push telemetry
+curl -X POST http://localhost:8000/api/v1/nodes/test001/telemetry \
+  -H "Content-Type: application/json" \
+  -d '{"uptime":3600,"heap_free":245000,"peer_count":2,"role":"NODE","state":{"led":"1"}}'
+
+# List nodes
+curl http://localhost:8000/api/v1/nodes
+
+# Get state
+curl http://localhost:8000/api/v1/state
+
+# Get node history
+curl http://localhost:8000/api/v1/nodes/test001/history?hours=1</pre>
+    </div>
+
+    <script>
+        const API = '';
+
+        async function pushTelemetry() {
+            const nodeId = document.getElementById('nodeId').value;
+            const resultEl = document.getElementById('pushResult');
+            try {
+                const data = JSON.parse(document.getElementById('telemetryData').value);
+                const resp = await fetch(`${API}/api/v1/nodes/${nodeId}/telemetry`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                const result = await resp.json();
+                resultEl.textContent = JSON.stringify(result, null, 2);
+                resultEl.className = resp.ok ? 'success' : 'error';
+                loadNodes();
+                loadState();
+            } catch (e) {
+                resultEl.textContent = 'Error: ' + e.message;
+                resultEl.className = 'error';
+            }
+        }
+
+        function randomizeTelemetry() {
+            const data = {
+                uptime: Math.floor(Math.random() * 86400),
+                heap_free: 200000 + Math.floor(Math.random() * 50000),
+                peer_count: Math.floor(Math.random() * 5),
+                role: Math.random() > 0.8 ? "COORD" : "NODE",
+                firmware: "1.0.0",
+                state: {
+                    led: Math.random() > 0.5 ? "1" : "0",
+                    temp: (20 + Math.random() * 10).toFixed(1),
+                    motion: Math.random() > 0.7 ? "1" : "0"
+                }
+            };
+            document.getElementById('telemetryData').value = JSON.stringify(data, null, 2);
+        }
+
+        async function loadNodes() {
+            try {
+                const resp = await fetch(`${API}/api/v1/nodes`);
+                const nodes = await resp.json();
+                if (nodes.length === 0) {
+                    document.getElementById('nodeList').innerHTML = '<p>No nodes registered yet. Push some telemetry!</p>';
+                    return;
+                }
+                let html = '<table><tr><th>ID</th><th>Name</th><th>Role</th><th>Status</th><th>Last Seen</th><th>Peers</th><th>Firmware</th></tr>';
+                for (const node of nodes) {
+                    const status = node.is_online ? '<span class="status online">Online</span>' : '<span class="status offline">Offline</span>';
+                    const lastSeen = new Date(node.last_seen).toLocaleString();
+                    html += `<tr>
+                        <td><strong>${node.id}</strong></td>
+                        <td>${node.name || '-'}</td>
+                        <td>${node.role}</td>
+                        <td>${status}</td>
+                        <td>${lastSeen}</td>
+                        <td>${node.peer_count ?? '-'}</td>
+                        <td>${node.firmware_version || '-'}</td>
+                    </tr>`;
+                }
+                html += '</table>';
+                document.getElementById('nodeList').innerHTML = html;
+            } catch (e) {
+                document.getElementById('nodeList').innerHTML = '<p class="error">Error: ' + e.message + '</p>';
+            }
+        }
+
+        async function loadState() {
+            try {
+                const resp = await fetch(`${API}/api/v1/state`);
+                const state = await resp.json();
+                if (state.length === 0) {
+                    document.getElementById('stateData').textContent = 'No state data yet.';
+                    return;
+                }
+                // Group by node
+                const grouped = {};
+                for (const s of state) {
+                    if (!grouped[s.node_id]) grouped[s.node_id] = {};
+                    grouped[s.node_id][s.key] = s.value;
+                }
+                document.getElementById('stateData').textContent = JSON.stringify(grouped, null, 2);
+            } catch (e) {
+                document.getElementById('stateData').textContent = 'Error: ' + e.message;
+            }
+        }
+
+        // Load on start
+        loadNodes();
+        loadState();
+
+        // Auto-refresh every 30 seconds
+        setInterval(() => {
+            loadNodes();
+            loadState();
+        }, 30000);
+    </script>
+</body>
+</html>
