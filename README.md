@@ -140,15 +140,22 @@ Hardware: Both button and LED disabled.
 
 PIR motion sensor node. Detects motion and publishes `motion` and `motion_<zone>` states to the mesh.
 
-Hardware: PIR sensor (HC-SR501 or similar) on GPIO4.
+**Supported sensors** (select via `#define` in sketch):
+
+| Sensor | Voltage | Warmup | Power | Size |
+|--------|---------|--------|-------|------|
+| AM312 (default) | 3.3V | 5 sec | ~60μA | Mini |
+| HC-SR501 | 5V | 30 sec | ~65mA | Large |
+
+Hardware: PIR sensor OUT connected to GPIO4.
 
 Features:
-- 30-second warmup period for sensor stabilization
-- 50ms debounce for reliable edge detection
-- 3-second hold time after last motion trigger
+- Automatic sensor-specific timing configuration
+- Debounce for reliable edge detection
+- Configurable hold time after motion trigger
 - Zone-based state keys for multi-sensor deployments
 
-Serial command: `pir` - show sensor status
+Serial command: `pir` - show sensor status and model
 
 ### mesh_shared_state_dht11
 

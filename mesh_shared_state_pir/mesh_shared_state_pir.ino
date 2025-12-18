@@ -4,23 +4,42 @@
  * Reads PIR sensor directly on GPIO and publishes motion state
  * to the mesh network.
  *
+ * Supported sensors:
+ *   - HC-SR501: Adjustable sensitivity/delay, 5V, 30s warmup
+ *   - AM312: Mini sensor, 3.3V native, 5s warmup, low power
+ *
  * Hardware:
  *   - ESP32 (original dual-core)
  *   - SSD1306 OLED 128x64 (I2C: SDA=21, SCL=22)
- *   - PIR sensor (HC-SR501 or similar)
- *     - VCC -> 3.3V or 5V
+ *   - PIR sensor:
+ *     - VCC -> 3.3V (AM312) or 5V (HC-SR501)
  *     - GND -> GND
- *     - OUT -> GPIO4 (D4)
+ *     - OUT -> GPIO4
  */
 
 #include <MeshSwarm.h>
 
+// ============== PIR SENSOR TYPE ==============
+// Uncomment ONE of these to select your sensor:
+#define PIR_SENSOR_AM312      // Mini 3.3V sensor, low power
+// #define PIR_SENSOR_HC_SR501   // Standard adjustable sensor
+
 // ============== PIR CONFIGURATION ==============
 #define PIR_PIN         4         // GPIO4 for PIR sensor output
-#define DEBOUNCE_MS     50        // Debounce time
-#define HOLD_TIME_MS    3000      // Keep motion active after last trigger
-#define WARMUP_SEC      30        // PIR warmup time
 #define MOTION_ZONE     "zone1"   // Zone identifier for this sensor
+
+// Sensor-specific defaults
+#ifdef PIR_SENSOR_AM312
+  #define PIR_MODEL       "AM312"
+  #define DEBOUNCE_MS     30        // AM312 has cleaner signal
+  #define HOLD_TIME_MS    2500      // AM312 has ~2s fixed output
+  #define WARMUP_SEC      5         // AM312 stabilizes quickly
+#else
+  #define PIR_MODEL       "HC-SR501"
+  #define DEBOUNCE_MS     50        // HC-SR501 may need more debounce
+  #define HOLD_TIME_MS    3000      // Extend beyond sensor's delay
+  #define WARMUP_SEC      30        // HC-SR501 needs longer warmup
+#endif
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
@@ -85,8 +104,10 @@ void setup() {
 
   // PIR pin setup
   pinMode(PIR_PIN, INPUT);
-  Serial.printf("[PIR] Sensor on GPIO%d\n", PIR_PIN);
+  Serial.printf("[PIR] Model: %s\n", PIR_MODEL);
+  Serial.printf("[PIR] GPIO: %d\n", PIR_PIN);
   Serial.printf("[PIR] Zone: %s\n", MOTION_ZONE);
+  Serial.printf("[PIR] Hold time: %dms\n", HOLD_TIME_MS);
 
   // PIR warmup
   Serial.printf("[PIR] Warming up (%d seconds)...\n", WARMUP_SEC);
@@ -110,11 +131,13 @@ void setup() {
       unsigned long secSinceMotion = motionActive ? 0 : (now - lastMotionTime) / 1000;
 
       Serial.println("\n--- PIR SENSOR ---");
+      Serial.printf("Model: %s\n", PIR_MODEL);
       Serial.printf("GPIO: %d\n", PIR_PIN);
       Serial.printf("Ready: %s\n", pirReady ? "YES" : "NO");
       Serial.printf("Motion: %s\n", motionActive ? "ACTIVE" : "none");
       Serial.printf("Event count: %lu\n", motionCount);
       Serial.printf("Last motion: %lu sec ago\n", secSinceMotion);
+      Serial.printf("Hold time: %dms\n", HOLD_TIME_MS);
       Serial.printf("Zone: %s\n", MOTION_ZONE);
       Serial.printf("Raw pin: %s\n", digitalRead(PIR_PIN) ? "HIGH" : "LOW");
       Serial.println();
@@ -129,14 +152,14 @@ void setup() {
     unsigned long secSinceMotion = motionActive ? 0 : (now - lastMotionTime) / 1000;
     if (secSinceMotion > 999) secSinceMotion = 999;
 
-    // PIR Status line
-    display.print("PIR:");
+    // PIR Status line with model
+    display.printf("%s:", PIR_MODEL);
     if (!pirReady) {
       display.println("WARMING UP");
     } else if (motionActive) {
       display.println("MOTION!");
     } else {
-      display.printf("idle %lus ago\n", secSinceMotion);
+      display.printf("idle %lus\n", secSinceMotion);
     }
 
     display.println("---------------------");
