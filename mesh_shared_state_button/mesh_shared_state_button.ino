@@ -6,36 +6,57 @@
  * Hardware:
  *   - ESP32 (original dual-core)
  *   - SSD1306 OLED 128x64 (I2C: SDA=21, SCL=22)
- *   - Button on GPIO0 (boot button)
+ *   - Boot button on GPIO0
+ *   - External button on GPIO5 (optional)
+ *     - Wire: GPIO5 -> Button -> GND
  */
 
 #include <MeshSwarm.h>
 
 // ============== BUTTON CONFIGURATION ==============
-#define BUTTON_PIN      0         // Boot button on most ESP32 boards
-#define DEBOUNCE_MS     50
+#define BOOT_BUTTON_PIN    0      // Boot button on most ESP32 boards
+#define EXT_BUTTON_PIN     5      // External button
+#define DEBOUNCE_MS        50
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 
-bool lastButtonState = HIGH;
-unsigned long lastButtonChange = 0;
+bool lastBootButtonState = HIGH;
+bool lastExtButtonState = HIGH;
+unsigned long lastBootButtonChange = 0;
+unsigned long lastExtButtonChange = 0;
+unsigned long buttonPressCount = 0;
 
 // ============== BUTTON HANDLING ==============
-void handleButton() {
-  bool buttonState = digitalRead(BUTTON_PIN);
+void toggleLed(const char* source) {
+  String currentLed = swarm.getState("led", "0");
+  String newLed = (currentLed == "1") ? "0" : "1";
+  swarm.setState("led", newLed);
+  buttonPressCount++;
+  Serial.printf("[BUTTON] %s pressed! LED: %s -> %s (count: %lu)\n",
+                source, currentLed.c_str(), newLed.c_str(), buttonPressCount);
+}
+
+void handleButtons() {
   unsigned long now = millis();
 
-  if (buttonState != lastButtonState && (now - lastButtonChange > DEBOUNCE_MS)) {
-    lastButtonChange = now;
-    lastButtonState = buttonState;
+  // Check boot button (GPIO0)
+  bool bootState = digitalRead(BOOT_BUTTON_PIN);
+  if (bootState != lastBootButtonState && (now - lastBootButtonChange > DEBOUNCE_MS)) {
+    lastBootButtonChange = now;
+    lastBootButtonState = bootState;
+    if (bootState == LOW) {
+      toggleLed("Boot");
+    }
+  }
 
-    // Button pressed (LOW because INPUT_PULLUP)
-    if (buttonState == LOW) {
-      String currentLed = swarm.getState("led", "0");
-      String newLed = (currentLed == "1") ? "0" : "1";
-      swarm.setState("led", newLed);
-      Serial.printf("[BUTTON] Pressed! LED state: %s -> %s\n", currentLed.c_str(), newLed.c_str());
+  // Check external button (GPIO5)
+  bool extState = digitalRead(EXT_BUTTON_PIN);
+  if (extState != lastExtButtonState && (now - lastExtButtonChange > DEBOUNCE_MS)) {
+    lastExtButtonChange = now;
+    lastExtButtonState = extState;
+    if (extState == LOW) {
+      toggleLed("External");
     }
   }
 }
@@ -44,20 +65,22 @@ void handleButton() {
 void setup() {
   swarm.begin();
 
-  // Button setup
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  Serial.printf("[HW] Button enabled on GPIO%d\n", BUTTON_PIN);
+  // Button setup - both use internal pull-up
+  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(EXT_BUTTON_PIN, INPUT_PULLUP);
+  Serial.printf("[HW] Boot button on GPIO%d\n", BOOT_BUTTON_PIN);
+  Serial.printf("[HW] External button on GPIO%d\n", EXT_BUTTON_PIN);
 
   // Register button polling in loop
-  swarm.onLoop(handleButton);
+  swarm.onLoop(handleButtons);
 
   // Custom display
   swarm.onDisplayUpdate([](Adafruit_SSD1306& display, int startLine) {
     display.println("Mode: BUTTON");
     display.println("---------------------");
     display.printf("led=%s\n", swarm.getState("led", "0").c_str());
-    display.println();
-    display.println("Press button to toggle");
+    display.printf("presses=%lu\n", buttonPressCount);
+    display.println("Press to toggle LED");
   });
 }
 
