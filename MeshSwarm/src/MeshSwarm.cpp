@@ -20,6 +20,7 @@ MeshSwarm::MeshSwarm()
     telemetryApiKey(""),
     telemetryInterval(TELEMETRY_INTERVAL),
     telemetryEnabled(false),
+    gatewayMode(false),
     lastStateChange(""),
     customStatus("")
 {
@@ -130,7 +131,13 @@ void MeshSwarm::update() {
 
   // Telemetry push
   if (telemetryEnabled && (now - lastTelemetryPush >= telemetryInterval)) {
-    pushTelemetry();
+    if (gatewayMode) {
+      // Gateway pushes its own telemetry directly
+      pushTelemetry();
+    } else {
+      // Regular node sends telemetry via mesh to gateway
+      sendTelemetryToGateway();
+    }
     lastTelemetryPush = now;
   }
 
@@ -172,7 +179,11 @@ bool MeshSwarm::setState(const String& key, const String& value) {
 
   // Push telemetry on state change
   if (telemetryEnabled) {
-    pushTelemetry();
+    if (gatewayMode) {
+      pushTelemetry();
+    } else {
+      sendTelemetryToGateway();
+    }
     lastTelemetryPush = millis();
   }
 
@@ -335,6 +346,13 @@ void MeshSwarm::onReceive(uint32_t from, String &msg) {
       break;
 
     case MSG_COMMAND:
+      break;
+
+    case MSG_TELEMETRY:
+      // Only gateway handles telemetry messages
+      if (gatewayMode) {
+        handleTelemetry(from, data);
+      }
       break;
   }
 }
@@ -587,12 +605,17 @@ void MeshSwarm::processSerial() {
   else if (input == "telem") {
     Serial.println("\n--- TELEMETRY STATUS ---");
     Serial.printf("Enabled: %s\n", telemetryEnabled ? "YES" : "NO");
-    Serial.printf("URL: %s\n", telemetryUrl.length() > 0 ? telemetryUrl.c_str() : "(not set)");
-    Serial.printf("Interval: %lu ms\n", telemetryInterval);
-    Serial.printf("WiFi: %s\n", isWiFiConnected() ? "Connected" : "Not connected");
-    if (isWiFiConnected()) {
-      Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("Gateway: %s\n", gatewayMode ? "YES" : "NO");
+    if (gatewayMode) {
+      Serial.printf("URL: %s\n", telemetryUrl.length() > 0 ? telemetryUrl.c_str() : "(not set)");
+      Serial.printf("WiFi: %s\n", isWiFiConnected() ? "Connected" : "Not connected");
+      if (isWiFiConnected()) {
+        Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+      }
+    } else {
+      Serial.println("Mode: Sending via mesh to gateway");
     }
+    Serial.printf("Interval: %lu ms\n", telemetryInterval);
     Serial.println();
   }
   else if (input == "push") {
@@ -679,6 +702,68 @@ void MeshSwarm::pushTelemetry() {
     Serial.println("[TELEM] Push OK");
   } else {
     Serial.printf("[TELEM] Push failed: %d\n", httpCode);
+  }
+  http.end();
+}
+
+// ============== GATEWAY MODE ==============
+void MeshSwarm::setGatewayMode(bool enable) {
+  gatewayMode = enable;
+  Serial.printf("[GATEWAY] %s\n", enable ? "Enabled" : "Disabled");
+}
+
+void MeshSwarm::sendTelemetryToGateway() {
+  // Build telemetry data
+  JsonDocument data;
+  data["uptime"] = (millis() - bootTime) / 1000;
+  data["heap_free"] = ESP.getFreeHeap();
+  data["peer_count"] = getPeerCount();
+  data["role"] = myRole;
+  data["firmware"] = FIRMWARE_VERSION;
+
+  // Include all shared state
+  JsonObject state = data["state"].to<JsonObject>();
+  for (auto& entry : sharedState) {
+    state[entry.first] = entry.second.value;
+  }
+
+  // Send via mesh broadcast (gateway will pick it up)
+  String msg = createMsg(MSG_TELEMETRY, data);
+  mesh.sendBroadcast(msg);
+
+  Serial.println("[TELEM] Sent to gateway via mesh");
+}
+
+void MeshSwarm::handleTelemetry(uint32_t from, JsonObject& data) {
+  // Gateway received telemetry from another node - push to server
+  Serial.printf("[GATEWAY] Received telemetry from %s\n", nodeIdToName(from).c_str());
+  pushTelemetryForNode(from, data);
+}
+
+void MeshSwarm::pushTelemetryForNode(uint32_t nodeId, JsonObject& data) {
+  if (!isWiFiConnected() || telemetryUrl.length() == 0) {
+    Serial.println("[GATEWAY] Cannot push - WiFi not connected or no server URL");
+    return;
+  }
+
+  HTTPClient http;
+  String url = telemetryUrl + "/api/v1/nodes/" + String(nodeId, HEX) + "/telemetry";
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  if (telemetryApiKey.length() > 0) {
+    http.addHeader("X-API-Key", telemetryApiKey);
+  }
+  http.setTimeout(5000);
+
+  String payload;
+  serializeJson(data, payload);
+
+  int httpCode = http.POST(payload);
+  if (httpCode == 200 || httpCode == 201) {
+    Serial.printf("[GATEWAY] Push OK for %s\n", nodeIdToName(nodeId).c_str());
+  } else {
+    Serial.printf("[GATEWAY] Push failed for %s: %d\n", nodeIdToName(nodeId).c_str(), httpCode);
   }
   http.end();
 }

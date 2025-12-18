@@ -93,7 +93,8 @@ enum MsgType {
   MSG_STATE_SET  = 2,
   MSG_STATE_SYNC = 3,
   MSG_STATE_REQ  = 4,
-  MSG_COMMAND    = 5
+  MSG_COMMAND    = 5,
+  MSG_TELEMETRY  = 6   // Node telemetry to gateway
 };
 
 // ============== DATA STRUCTURES ==============
@@ -181,6 +182,10 @@ public:
   void connectToWiFi(const char* ssid, const char* password);
   bool isWiFiConnected();
 
+  // Gateway mode - receives telemetry from other nodes and pushes to server
+  void setGatewayMode(bool enable);
+  bool isGateway() { return gatewayMode; }
+
 private:
   // Core objects
   painlessMesh mesh;
@@ -209,6 +214,7 @@ private:
   String telemetryApiKey;
   unsigned long telemetryInterval;
   bool telemetryEnabled;
+  bool gatewayMode;
 
   // Custom hooks
   std::vector<LoopCallback> loopCallbacks;
@@ -241,6 +247,9 @@ private:
   void broadcastState(const String& key);
   void handleStateSet(uint32_t from, JsonObject& data);
   void handleStateSync(uint32_t from, JsonObject& data);
+  void handleTelemetry(uint32_t from, JsonObject& data);
+  void sendTelemetryToGateway();
+  void pushTelemetryForNode(uint32_t nodeId, JsonObject& data);
 
   String createMsg(MsgType type, JsonDocument& data);
   String nodeIdToName(uint32_t id);
