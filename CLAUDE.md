@@ -19,6 +19,7 @@ ESP32 mesh networking project using painlessMesh for self-organizing, self-heali
 - ArduinoJson
 - Adafruit SSD1306
 - Adafruit GFX Library
+- DHT sensor library (by Adafruit) - for DHT11 node
 
 ## Architecture
 
@@ -71,7 +72,8 @@ The mesh_shared_state_* sketches share ~90% code with different hardware configs
 - `mesh_shared_state_button`: Button input only
 - `mesh_shared_state_led`: LED output only
 - `mesh_shared_state_watcher`: Observer, no I/O
-- `mesh_shared_state_pir`: PIR sensor via I2C to Nano
+- `mesh_shared_state_pir`: PIR motion sensor (direct GPIO4)
+- `mesh_shared_state_dht11`: DHT11 temperature/humidity sensor (GPIO4)
 
 Enable/disable features via defines:
 ```cpp
@@ -85,11 +87,13 @@ ESP32 I2C pins: GPIO21 (SDA), GPIO22 (SCL)
 
 Devices on bus:
 - 0x3C: SSD1306 OLED display
-- 0x42: PIR Nano module (when connected)
 
 Use `scan` serial command to enumerate I2C devices.
 
-## PIR Module I2C Protocol
+## PIR Module I2C Protocol (Legacy)
+
+> **Note**: The main `mesh_shared_state_pir` sketch now reads PIR directly from GPIO4.
+> This I2C protocol is only used by the legacy `pir_nano` sketch.
 
 Nano acts as I2C slave at 0x42 with register interface:
 - 0x00 STATUS: Bit0=motion, Bit1=ready
@@ -103,7 +107,9 @@ Nano acts as I2C slave at 0x42 with register interface:
 
 All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `reboot`
 
-PIR node adds: `pir`, `scan`
+PIR node adds: `pir`
+
+DHT11 node adds: `dht`
 
 ## Hardware Connections
 
@@ -113,7 +119,17 @@ PIR node adds: `pir`, `scan`
 - Button: GPIO0
 - LED: GPIO2
 
-### Nano PIR Module
+### PIR Sensor (mesh_shared_state_pir)
+- PIR OUT: GPIO4
+- PIR VCC: 3.3V or 5V
+- PIR GND: GND
+
+### DHT11 Sensor (mesh_shared_state_dht11)
+- DHT DATA: GPIO4 (with 10k pull-up to VCC)
+- DHT VCC: 3.3V
+- DHT GND: GND
+
+### Nano PIR Module (Legacy)
 - PIR sensor OUT: D2 (interrupt-capable)
 - I2C SDA: A4
 - I2C SCL: A5
