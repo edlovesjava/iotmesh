@@ -14,7 +14,12 @@ MeshSwarm::MeshSwarm()
     lastHeartbeat(0),
     lastStateSync(0),
     lastDisplayUpdate(0),
+    lastTelemetryPush(0),
     bootTime(0),
+    telemetryUrl(""),
+    telemetryApiKey(""),
+    telemetryInterval(TELEMETRY_INTERVAL),
+    telemetryEnabled(false),
     lastStateChange(""),
     customStatus("")
 {
@@ -123,6 +128,12 @@ void MeshSwarm::update() {
     lastDisplayUpdate = now;
   }
 
+  // Telemetry push
+  if (telemetryEnabled && (now - lastTelemetryPush >= telemetryInterval)) {
+    pushTelemetry();
+    lastTelemetryPush = now;
+  }
+
   // Serial commands
   if (Serial.available()) {
     processSerial();
@@ -158,6 +169,12 @@ bool MeshSwarm::setState(const String& key, const String& value) {
   triggerWatchers(key, value, oldValue);
   broadcastState(key);
   lastStateChange = key + "=" + value;
+
+  // Push telemetry on state change
+  if (telemetryEnabled) {
+    pushTelemetry();
+    lastTelemetryPush = millis();
+  }
 
   return true;
 }
@@ -567,7 +584,101 @@ void MeshSwarm::processSerial() {
   else if (input == "reboot") {
     ESP.restart();
   }
-  else {
-    Serial.println("Commands: status, peers, state, set <k> <v>, get <k>, sync, scan, reboot");
+  else if (input == "telem") {
+    Serial.println("\n--- TELEMETRY STATUS ---");
+    Serial.printf("Enabled: %s\n", telemetryEnabled ? "YES" : "NO");
+    Serial.printf("URL: %s\n", telemetryUrl.length() > 0 ? telemetryUrl.c_str() : "(not set)");
+    Serial.printf("Interval: %lu ms\n", telemetryInterval);
+    Serial.printf("WiFi: %s\n", isWiFiConnected() ? "Connected" : "Not connected");
+    if (isWiFiConnected()) {
+      Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+    }
+    Serial.println();
   }
+  else if (input == "push") {
+    if (telemetryEnabled) {
+      pushTelemetry();
+      Serial.println("[TELEM] Manual push triggered");
+    } else {
+      Serial.println("[TELEM] Telemetry not enabled");
+    }
+  }
+  else {
+    Serial.println("Commands: status, peers, state, set <k> <v>, get <k>, sync, scan, telem, push, reboot");
+  }
+}
+
+// ============== TELEMETRY ==============
+void MeshSwarm::setTelemetryServer(const char* url, const char* apiKey) {
+  telemetryUrl = String(url);
+  if (apiKey != nullptr) {
+    telemetryApiKey = String(apiKey);
+  }
+  Serial.printf("[TELEM] Server: %s\n", telemetryUrl.c_str());
+}
+
+void MeshSwarm::setTelemetryInterval(unsigned long ms) {
+  telemetryInterval = ms;
+  Serial.printf("[TELEM] Interval: %lu ms\n", telemetryInterval);
+}
+
+void MeshSwarm::enableTelemetry(bool enable) {
+  telemetryEnabled = enable;
+  Serial.printf("[TELEM] %s\n", enable ? "Enabled" : "Disabled");
+}
+
+void MeshSwarm::connectToWiFi(const char* ssid, const char* password) {
+  // painlessMesh supports station mode alongside mesh
+  mesh.stationManual(ssid, password);
+  Serial.printf("[WIFI] Connecting to %s...\n", ssid);
+}
+
+bool MeshSwarm::isWiFiConnected() {
+  return WiFi.status() == WL_CONNECTED;
+}
+
+void MeshSwarm::pushTelemetry() {
+  if (!telemetryEnabled || telemetryUrl.length() == 0) {
+    return;
+  }
+
+  if (!isWiFiConnected()) {
+    Serial.println("[TELEM] WiFi not connected, skipping push");
+    return;
+  }
+
+  HTTPClient http;
+  String url = telemetryUrl + "/api/v1/nodes/" + String(myId, HEX) + "/telemetry";
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  if (telemetryApiKey.length() > 0) {
+    http.addHeader("X-API-Key", telemetryApiKey);
+  }
+  http.setTimeout(5000);  // 5 second timeout
+
+  // Build JSON payload
+  JsonDocument doc;
+  doc["uptime"] = (millis() - bootTime) / 1000;
+  doc["heap_free"] = ESP.getFreeHeap();
+  doc["peer_count"] = getPeerCount();
+  doc["role"] = myRole;
+  doc["firmware"] = FIRMWARE_VERSION;
+
+  // Include all shared state
+  JsonObject state = doc["state"].to<JsonObject>();
+  for (auto& entry : sharedState) {
+    state[entry.first] = entry.second.value;
+  }
+
+  String payload;
+  serializeJson(doc, payload);
+
+  int httpCode = http.POST(payload);
+  if (httpCode == 200 || httpCode == 201) {
+    Serial.println("[TELEM] Push OK");
+  } else {
+    Serial.printf("[TELEM] Push failed: %d\n", httpCode);
+  }
+  http.end();
 }

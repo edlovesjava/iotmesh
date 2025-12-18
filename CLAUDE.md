@@ -127,7 +127,9 @@ Nano acts as I2C slave at 0x42 with register interface:
 
 ## Serial Commands (ESP32 nodes)
 
-All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `reboot`
+All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `scan`, `reboot`
+
+Telemetry-enabled nodes add: `telem`, `push`
 
 PIR node adds: `pir`
 
@@ -175,3 +177,17 @@ watchState("motion", [](const String& key, const String& value, const String& ol
   // React to motion state
 });
 ```
+
+### Enabling telemetry to server
+```cpp
+// In setup():
+swarm.connectToWiFi("SSID", "password");
+swarm.setTelemetryServer("http://192.168.1.100:8000");
+swarm.setTelemetryInterval(30000);  // 30 seconds
+swarm.enableTelemetry(true);
+```
+
+Telemetry pushes:
+- Every 30 seconds (configurable)
+- Immediately on state change
+- Includes: uptime, heap_free, peer_count, role, firmware, and all shared state

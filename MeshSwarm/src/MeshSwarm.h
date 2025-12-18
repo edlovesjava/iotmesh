@@ -20,6 +20,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <HTTPClient.h>
 #include <map>
 #include <vector>
 #include <functional>
@@ -75,6 +76,15 @@
 
 #ifndef DISPLAY_INTERVAL
 #define DISPLAY_INTERVAL     500
+#endif
+
+// Telemetry
+#ifndef TELEMETRY_INTERVAL
+#define TELEMETRY_INTERVAL   30000
+#endif
+
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION     "1.0.0"
 #endif
 
 // ============== MESSAGE TYPES ==============
@@ -160,6 +170,17 @@ public:
   // Heartbeat data customization
   void setHeartbeatData(const String& key, int value);
 
+  // Telemetry to server
+  void setTelemetryServer(const char* url, const char* apiKey = nullptr);
+  void setTelemetryInterval(unsigned long ms);
+  void enableTelemetry(bool enable);
+  bool isTelemetryEnabled() { return telemetryEnabled; }
+  void pushTelemetry();
+
+  // WiFi station mode for telemetry
+  void connectToWiFi(const char* ssid, const char* password);
+  bool isWiFiConnected();
+
 private:
   // Core objects
   painlessMesh mesh;
@@ -180,7 +201,14 @@ private:
   unsigned long lastHeartbeat;
   unsigned long lastStateSync;
   unsigned long lastDisplayUpdate;
+  unsigned long lastTelemetryPush;
   unsigned long bootTime;
+
+  // Telemetry config
+  String telemetryUrl;
+  String telemetryApiKey;
+  unsigned long telemetryInterval;
+  bool telemetryEnabled;
 
   // Custom hooks
   std::vector<LoopCallback> loopCallbacks;
