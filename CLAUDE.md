@@ -6,6 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ESP32 mesh networking project using painlessMesh for self-organizing, self-healing networks with distributed shared state. Nodes automatically discover peers, elect coordinators, and synchronize key-value state across the network.
 
+## Repository Structure (Monorepo)
+
+```
+iotmesh/
+├── firmware/                    # ESP32/Arduino sketches
+│   ├── mesh_shared_state/       # Full-featured reference node
+│   ├── mesh_shared_state_button/
+│   ├── mesh_shared_state_led/
+│   ├── mesh_shared_state_watcher/
+│   ├── mesh_shared_state_pir/
+│   ├── mesh_shared_state_dht11/
+│   ├── mesh_swarm_base/
+│   ├── pir_nano/               # Arduino Nano PIR module (legacy)
+│   └── pir_nano_test/
+├── MeshSwarm/                   # Arduino library
+├── server/                      # Telemetry server (future)
+│   ├── api/                     # FastAPI backend
+│   └── dashboard/               # React frontend
+├── docs/                        # Documentation
+└── README.md
+```
+
 ## Development Environment
 
 - **IDE**: Arduino IDE
@@ -67,7 +89,7 @@ JSON messages over painlessMesh with type field:
 
 ## Sketch Variants
 
-The mesh_shared_state_* sketches share ~90% code with different hardware configs:
+Located in `firmware/`, the mesh_shared_state_* sketches share ~90% code with different hardware configs:
 - `mesh_shared_state`: Full features (button + LED)
 - `mesh_shared_state_button`: Button input only
 - `mesh_shared_state_led`: LED output only
