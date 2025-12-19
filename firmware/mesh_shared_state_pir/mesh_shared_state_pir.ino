@@ -31,25 +31,23 @@
 // Sensor-specific defaults
 #ifdef PIR_SENSOR_AM312
   #define PIR_MODEL       "AM312"
-  #define DEBOUNCE_MS     30        // AM312 has cleaner signal
-  #define HOLD_TIME_MS    2500      // AM312 has ~2s fixed output
   #define WARMUP_SEC      5         // AM312 stabilizes quickly
 #else
   #define PIR_MODEL       "HC-SR501"
-  #define DEBOUNCE_MS     50        // HC-SR501 may need more debounce
-  #define HOLD_TIME_MS    3000      // Extend beyond sensor's delay
   #define WARMUP_SEC      30        // HC-SR501 needs longer warmup
 #endif
+
+// Time window for motion detection
+#define MOTION_WINDOW_MS  10000     // 10 second evaluation window
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 
-// PIR state
+// PIR state - time window approach
 bool pirReady = false;
-bool motionActive = false;
-bool lastPirReading = LOW;
-unsigned long lastTriggerTime = 0;
-unsigned long lastMotionTime = 0;
+bool motionDetectedInWindow = false;  // Any motion detected this window?
+bool lastReportedMotion = false;      // Last state sent to mesh
+unsigned long lastWindowCheck = 0;    // Last window evaluation time
 unsigned long motionCount = 0;
 unsigned long bootTime = 0;
 
@@ -58,48 +56,45 @@ void pollPir() {
   if (!pirReady) return;
 
   unsigned long now = millis();
-  bool pirReading = digitalRead(PIR_PIN);
 
-  // Debounce - detect rising edge
-  if (pirReading == HIGH && lastPirReading == LOW) {
-    if (now - lastTriggerTime > DEBOUNCE_MS) {
-      lastTriggerTime = now;
-
-      if (!motionActive) {
-        // New motion event
-        motionActive = true;
-        motionCount++;
-        lastMotionTime = now;
-
-        swarm.setState("motion", "1");
-        String zoneKey = String("motion_") + MOTION_ZONE;
-        swarm.setState(zoneKey, "1");
-
-        Serial.printf("[PIR] Motion DETECTED (#%lu)\n", motionCount);
-      } else {
-        // Extend hold time
-        lastMotionTime = now;
-      }
-    }
+  // Track any motion in current window
+  if (digitalRead(PIR_PIN) == HIGH) {
+    motionDetectedInWindow = true;
   }
 
-  lastPirReading = pirReading;
+  // Evaluate window every MOTION_WINDOW_MS
+  if (now - lastWindowCheck >= MOTION_WINDOW_MS) {
+    lastWindowCheck = now;
 
-  // Hold time expired - clear motion
-  if (motionActive && (now - lastMotionTime >= HOLD_TIME_MS)) {
-    motionActive = false;
+    if (motionDetectedInWindow && !lastReportedMotion) {
+      // Transition: no motion → motion
+      lastReportedMotion = true;
+      motionCount++;
 
-    swarm.setState("motion", "0");
-    String zoneKey = String("motion_") + MOTION_ZONE;
-    swarm.setState(zoneKey, "0");
+      String zoneKey = String("motion_") + MOTION_ZONE;
+      swarm.setStates({{"motion", "1"}, {zoneKey, "1"}});
 
-    Serial.println("[PIR] Motion cleared");
+      Serial.printf("[PIR] Motion DETECTED (#%lu)\n", motionCount);
+    }
+    else if (!motionDetectedInWindow && lastReportedMotion) {
+      // Transition: motion → no motion
+      lastReportedMotion = false;
+
+      String zoneKey = String("motion_") + MOTION_ZONE;
+      swarm.setStates({{"motion", "0"}, {zoneKey, "0"}});
+
+      Serial.println("[PIR] Motion cleared");
+    }
+
+    // Reset window
+    motionDetectedInWindow = false;
   }
 }
 
 // ============== SETUP ==============
 void setup() {
-  swarm.begin();
+  swarm.begin("PIR");
+  swarm.enableTelemetry(true);
   bootTime = millis();
 
   // PIR pin setup
@@ -107,7 +102,7 @@ void setup() {
   Serial.printf("[PIR] Model: %s\n", PIR_MODEL);
   Serial.printf("[PIR] GPIO: %d\n", PIR_PIN);
   Serial.printf("[PIR] Zone: %s\n", MOTION_ZONE);
-  Serial.printf("[PIR] Hold time: %dms\n", HOLD_TIME_MS);
+  Serial.printf("[PIR] Window: %dms\n", MOTION_WINDOW_MS);
 
   // PIR warmup
   Serial.printf("[PIR] Warming up (%d seconds)...\n", WARMUP_SEC);
@@ -118,8 +113,14 @@ void setup() {
   }
   Serial.println();
   pirReady = true;
+  lastWindowCheck = millis();  // Start first window now
   Serial.println("[PIR] Ready!");
   Serial.println();
+
+  // Send initial state (no motion)
+  String zoneKey = String("motion_") + MOTION_ZONE;
+  swarm.setStates({{"motion", "0"}, {zoneKey, "0"}});
+  Serial.println("[PIR] Initial state: no motion");
 
   // Register PIR polling in loop
   swarm.onLoop(pollPir);
@@ -128,16 +129,17 @@ void setup() {
   swarm.onSerialCommand([](const String& input) -> bool {
     if (input == "pir") {
       unsigned long now = millis();
-      unsigned long secSinceMotion = motionActive ? 0 : (now - lastMotionTime) / 1000;
+      unsigned long secSinceCheck = (now - lastWindowCheck) / 1000;
 
       Serial.println("\n--- PIR SENSOR ---");
       Serial.printf("Model: %s\n", PIR_MODEL);
       Serial.printf("GPIO: %d\n", PIR_PIN);
       Serial.printf("Ready: %s\n", pirReady ? "YES" : "NO");
-      Serial.printf("Motion: %s\n", motionActive ? "ACTIVE" : "none");
+      Serial.printf("Motion state: %s\n", lastReportedMotion ? "ACTIVE" : "none");
+      Serial.printf("Window activity: %s\n", motionDetectedInWindow ? "YES" : "no");
       Serial.printf("Event count: %lu\n", motionCount);
-      Serial.printf("Last motion: %lu sec ago\n", secSinceMotion);
-      Serial.printf("Hold time: %dms\n", HOLD_TIME_MS);
+      Serial.printf("Last check: %lu sec ago\n", secSinceCheck);
+      Serial.printf("Window: %dms\n", MOTION_WINDOW_MS);
       Serial.printf("Zone: %s\n", MOTION_ZONE);
       Serial.printf("Raw pin: %s\n", digitalRead(PIR_PIN) ? "HIGH" : "LOW");
       Serial.println();
@@ -148,26 +150,23 @@ void setup() {
 
   // Register custom display section
   swarm.onDisplayUpdate([](Adafruit_SSD1306& display, int startLine) {
-    unsigned long now = millis();
-    unsigned long secSinceMotion = motionActive ? 0 : (now - lastMotionTime) / 1000;
-    if (secSinceMotion > 999) secSinceMotion = 999;
-
     // PIR Status line with model
     display.printf("%s:", PIR_MODEL);
     if (!pirReady) {
       display.println("WARMING UP");
-    } else if (motionActive) {
+    } else if (lastReportedMotion) {
       display.println("MOTION!");
     } else {
-      display.printf("idle %lus\n", secSinceMotion);
+      display.println("idle");
     }
 
     display.println("---------------------");
 
     // Show state
-    display.printf("motion=%s\n", motionActive ? "1" : "0");
+    display.printf("motion=%s\n", lastReportedMotion ? "1" : "0");
     display.printf("zone=%s\n", MOTION_ZONE);
     display.printf("events=%lu\n", motionCount);
+    display.printf("window=%s\n", motionDetectedInWindow ? "active" : "-");
   });
 
   // Add PIR status to heartbeat

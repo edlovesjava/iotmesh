@@ -14,7 +14,14 @@ MeshSwarm::MeshSwarm()
     lastHeartbeat(0),
     lastStateSync(0),
     lastDisplayUpdate(0),
+    lastTelemetryPush(0),
+    lastStateTelemetryPush(0),
     bootTime(0),
+    telemetryUrl(""),
+    telemetryApiKey(""),
+    telemetryInterval(TELEMETRY_INTERVAL),
+    telemetryEnabled(false),
+    gatewayMode(false),
     lastStateChange(""),
     customStatus("")
 {
@@ -123,6 +130,18 @@ void MeshSwarm::update() {
     lastDisplayUpdate = now;
   }
 
+  // Telemetry push
+  if (telemetryEnabled && (now - lastTelemetryPush >= telemetryInterval)) {
+    if (gatewayMode) {
+      // Gateway pushes its own telemetry directly
+      pushTelemetry();
+    } else {
+      // Regular node sends telemetry via mesh to gateway
+      sendTelemetryToGateway();
+    }
+    lastTelemetryPush = now;
+  }
+
   // Serial commands
   if (Serial.available()) {
     processSerial();
@@ -159,7 +178,78 @@ bool MeshSwarm::setState(const String& key, const String& value) {
   broadcastState(key);
   lastStateChange = key + "=" + value;
 
+  // Push telemetry on state change (with debouncing)
+  unsigned long now = millis();
+  if (telemetryEnabled) {
+    if (now - lastStateTelemetryPush >= STATE_TELEMETRY_MIN_INTERVAL) {
+      Serial.printf("[TELEM] State change push for %s=%s\n", key.c_str(), value.c_str());
+      if (gatewayMode) {
+        pushTelemetry();
+      } else {
+        sendTelemetryToGateway();
+      }
+      lastTelemetryPush = now;
+      lastStateTelemetryPush = now;
+    } else {
+      Serial.printf("[TELEM] Debounced %s=%s (wait %lums)\n", key.c_str(), value.c_str(),
+                    STATE_TELEMETRY_MIN_INTERVAL - (now - lastStateTelemetryPush));
+    }
+  }
+
   return true;
+}
+
+bool MeshSwarm::setStates(std::initializer_list<std::pair<String, String>> states) {
+  bool anyChanged = false;
+
+  for (const auto& kv : states) {
+    const String& key = kv.first;
+    const String& value = kv.second;
+
+    String oldValue = "";
+    uint32_t newVersion = 1;
+
+    if (sharedState.count(key)) {
+      oldValue = sharedState[key].value;
+      newVersion = sharedState[key].version + 1;
+
+      if (oldValue == value) {
+        continue;  // Skip unchanged values
+      }
+    }
+
+    StateEntry entry;
+    entry.value = value;
+    entry.version = newVersion;
+    entry.origin = myId;
+    entry.timestamp = millis();
+    sharedState[key] = entry;
+
+    triggerWatchers(key, value, oldValue);
+    broadcastState(key);
+    lastStateChange = key + "=" + value;
+    anyChanged = true;
+  }
+
+  // Push telemetry once for all changes (with debouncing)
+  if (anyChanged && telemetryEnabled) {
+    unsigned long now = millis();
+    if (now - lastStateTelemetryPush >= STATE_TELEMETRY_MIN_INTERVAL) {
+      Serial.println("[TELEM] State change push (batch)");
+      if (gatewayMode) {
+        pushTelemetry();
+      } else {
+        sendTelemetryToGateway();
+      }
+      lastTelemetryPush = now;
+      lastStateTelemetryPush = now;
+    } else {
+      Serial.printf("[TELEM] Debounced batch (wait %lums)\n",
+                    STATE_TELEMETRY_MIN_INTERVAL - (now - lastStateTelemetryPush));
+    }
+  }
+
+  return anyChanged;
 }
 
 String MeshSwarm::getState(const String& key, const String& defaultVal) {
@@ -318,6 +408,13 @@ void MeshSwarm::onReceive(uint32_t from, String &msg) {
       break;
 
     case MSG_COMMAND:
+      break;
+
+    case MSG_TELEMETRY:
+      // Only gateway handles telemetry messages
+      if (gatewayMode) {
+        handleTelemetry(from, data);
+      }
       break;
   }
 }
@@ -567,7 +664,176 @@ void MeshSwarm::processSerial() {
   else if (input == "reboot") {
     ESP.restart();
   }
-  else {
-    Serial.println("Commands: status, peers, state, set <k> <v>, get <k>, sync, scan, reboot");
+  else if (input == "telem") {
+    Serial.println("\n--- TELEMETRY STATUS ---");
+    Serial.printf("Enabled: %s\n", telemetryEnabled ? "YES" : "NO");
+    Serial.printf("Gateway: %s\n", gatewayMode ? "YES" : "NO");
+    if (gatewayMode) {
+      Serial.printf("URL: %s\n", telemetryUrl.length() > 0 ? telemetryUrl.c_str() : "(not set)");
+      Serial.printf("WiFi: %s\n", isWiFiConnected() ? "Connected" : "Not connected");
+      if (isWiFiConnected()) {
+        Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+      }
+    } else {
+      Serial.println("Mode: Sending via mesh to gateway");
+    }
+    Serial.printf("Interval: %lu ms\n", telemetryInterval);
+    Serial.println();
   }
+  else if (input == "push") {
+    if (telemetryEnabled) {
+      pushTelemetry();
+      Serial.println("[TELEM] Manual push triggered");
+    } else {
+      Serial.println("[TELEM] Telemetry not enabled");
+    }
+  }
+  else {
+    Serial.println("Commands: status, peers, state, set <k> <v>, get <k>, sync, scan, telem, push, reboot");
+  }
+}
+
+// ============== TELEMETRY ==============
+void MeshSwarm::setTelemetryServer(const char* url, const char* apiKey) {
+  telemetryUrl = String(url);
+  if (apiKey != nullptr) {
+    telemetryApiKey = String(apiKey);
+  }
+  Serial.printf("[TELEM] Server: %s\n", telemetryUrl.c_str());
+}
+
+void MeshSwarm::setTelemetryInterval(unsigned long ms) {
+  telemetryInterval = ms;
+  Serial.printf("[TELEM] Interval: %lu ms\n", telemetryInterval);
+}
+
+void MeshSwarm::enableTelemetry(bool enable) {
+  telemetryEnabled = enable;
+  Serial.printf("[TELEM] %s\n", enable ? "Enabled" : "Disabled");
+}
+
+void MeshSwarm::connectToWiFi(const char* ssid, const char* password) {
+  // painlessMesh supports station mode alongside mesh
+  mesh.stationManual(ssid, password);
+  Serial.printf("[WIFI] Connecting to %s...\n", ssid);
+}
+
+bool MeshSwarm::isWiFiConnected() {
+  return WiFi.status() == WL_CONNECTED;
+}
+
+void MeshSwarm::pushTelemetry() {
+  if (!telemetryEnabled || telemetryUrl.length() == 0) {
+    return;
+  }
+
+  if (!isWiFiConnected()) {
+    Serial.println("[TELEM] WiFi not connected, skipping push");
+    return;
+  }
+
+  HTTPClient http;
+  String url = telemetryUrl + "/api/v1/nodes/" + String(myId, HEX) + "/telemetry";
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  if (telemetryApiKey.length() > 0) {
+    http.addHeader("X-API-Key", telemetryApiKey);
+  }
+  http.setTimeout(5000);  // 5 second timeout
+
+  // Build JSON payload
+  JsonDocument doc;
+  doc["name"] = myName;
+  doc["uptime"] = (millis() - bootTime) / 1000;
+  doc["heap_free"] = ESP.getFreeHeap();
+  doc["peer_count"] = getPeerCount();
+  doc["role"] = myRole;
+  doc["firmware"] = FIRMWARE_VERSION;
+
+  // Include all shared state
+  JsonObject state = doc["state"].to<JsonObject>();
+  for (auto& entry : sharedState) {
+    state[entry.first] = entry.second.value;
+  }
+
+  String payload;
+  serializeJson(doc, payload);
+
+  int httpCode = http.POST(payload);
+  if (httpCode == 200 || httpCode == 201) {
+    Serial.println("[TELEM] Push OK");
+  } else {
+    Serial.printf("[TELEM] Push failed: %d\n", httpCode);
+  }
+  http.end();
+}
+
+// ============== GATEWAY MODE ==============
+void MeshSwarm::setGatewayMode(bool enable) {
+  gatewayMode = enable;
+  Serial.printf("[GATEWAY] %s\n", enable ? "Enabled" : "Disabled");
+}
+
+void MeshSwarm::sendTelemetryToGateway() {
+  // Build telemetry data
+  JsonDocument data;
+  data["name"] = myName;
+  data["uptime"] = (millis() - bootTime) / 1000;
+  data["heap_free"] = ESP.getFreeHeap();
+  data["peer_count"] = getPeerCount();
+  data["role"] = myRole;
+  data["firmware"] = FIRMWARE_VERSION;
+
+  // Include all shared state
+  JsonObject state = data["state"].to<JsonObject>();
+  for (auto& entry : sharedState) {
+    state[entry.first] = entry.second.value;
+  }
+
+  // Send via mesh broadcast (gateway will pick it up)
+  String msg = createMsg(MSG_TELEMETRY, data);
+  mesh.sendBroadcast(msg);
+
+  Serial.println("[TELEM] Sent to gateway via mesh");
+}
+
+void MeshSwarm::handleTelemetry(uint32_t from, JsonObject& data) {
+  // Gateway received telemetry from another node - push to server
+  Serial.printf("[GATEWAY] Received telemetry from %s\n", nodeIdToName(from).c_str());
+
+  // Debug: dump the telemetry payload
+  String debugPayload;
+  serializeJson(data, debugPayload);
+  Serial.printf("[GATEWAY] Payload: %s\n", debugPayload.c_str());
+
+  pushTelemetryForNode(from, data);
+}
+
+void MeshSwarm::pushTelemetryForNode(uint32_t nodeId, JsonObject& data) {
+  if (!isWiFiConnected() || telemetryUrl.length() == 0) {
+    Serial.println("[GATEWAY] Cannot push - WiFi not connected or no server URL");
+    return;
+  }
+
+  HTTPClient http;
+  String url = telemetryUrl + "/api/v1/nodes/" + String(nodeId, HEX) + "/telemetry";
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  if (telemetryApiKey.length() > 0) {
+    http.addHeader("X-API-Key", telemetryApiKey);
+  }
+  http.setTimeout(5000);
+
+  String payload;
+  serializeJson(data, payload);
+
+  int httpCode = http.POST(payload);
+  if (httpCode == 200 || httpCode == 201) {
+    Serial.printf("[GATEWAY] Push OK for %s\n", nodeIdToName(nodeId).c_str());
+  } else {
+    Serial.printf("[GATEWAY] Push failed for %s: %d\n", nodeIdToName(nodeId).c_str(), httpCode);
+  }
+  http.end();
 }

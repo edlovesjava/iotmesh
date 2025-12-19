@@ -16,6 +16,7 @@ async def push_telemetry(node_id: str, data: TelemetryIn, db: AsyncSession = Dep
     Push telemetry data from a node.
     Auto-registers the node if it doesn't exist.
     """
+    print(f"[TELEMETRY] node_id={node_id} payload={data.model_dump()}")
     now = datetime.utcnow()
 
     # Get or create node
@@ -26,6 +27,8 @@ async def push_telemetry(node_id: str, data: TelemetryIn, db: AsyncSession = Dep
         # Update existing node
         node.last_seen = now
         node.is_online = True
+        if data.name:
+            node.name = data.name
         if data.firmware:
             node.firmware_version = data.firmware
         if data.role:
@@ -34,6 +37,7 @@ async def push_telemetry(node_id: str, data: TelemetryIn, db: AsyncSession = Dep
         # Create new node
         node = Node(
             id=node_id,
+            name=data.name,
             firmware_version=data.firmware,
             role=data.role or "NODE",
             first_seen=now,

@@ -86,6 +86,7 @@ JSON messages over painlessMesh with type field:
 - `MSG_STATE_SYNC` (3): Full state dump
 - `MSG_STATE_REQ` (4): Request state from peers
 - `MSG_COMMAND` (5): Custom commands
+- `MSG_TELEMETRY` (6): Node telemetry to gateway
 
 ## Sketch Variants
 
@@ -96,6 +97,7 @@ Located in `firmware/`, the mesh_shared_state_* sketches share ~90% code with di
 - `mesh_shared_state_watcher`: Observer, no I/O
 - `mesh_shared_state_pir`: PIR motion sensor (direct GPIO4)
 - `mesh_shared_state_dht11`: DHT11 temperature/humidity sensor (GPIO4)
+- `mesh_gateway`: Telemetry gateway (bridges mesh to server via WiFi)
 
 Enable/disable features via defines:
 ```cpp
@@ -127,7 +129,9 @@ Nano acts as I2C slave at 0x42 with register interface:
 
 ## Serial Commands (ESP32 nodes)
 
-All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `reboot`
+All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `scan`, `reboot`
+
+Telemetry-enabled nodes add: `telem`, `push`
 
 PIR node adds: `pir`
 
@@ -175,3 +179,30 @@ watchState("motion", [](const String& key, const String& value, const String& ol
   // React to motion state
 });
 ```
+
+### Telemetry Architecture
+
+**Gateway Pattern**: A dedicated gateway node bridges mesh to server.
+- Only the gateway needs WiFi credentials
+- Other nodes send telemetry via mesh to the gateway
+- Gateway pushes all telemetry to the server via HTTP
+
+**Gateway node setup** (firmware/mesh_gateway):
+```cpp
+swarm.begin("Gateway");
+swarm.connectToWiFi("SSID", "password");
+swarm.setGatewayMode(true);
+swarm.setTelemetryServer("http://192.168.1.100:8000");
+swarm.enableTelemetry(true);
+```
+
+**Regular node setup** (no WiFi needed):
+```cpp
+swarm.begin();
+swarm.enableTelemetry(true);  // Sends via mesh to gateway
+```
+
+Telemetry pushes:
+- Every 30 seconds (configurable)
+- Immediately on state change
+- Includes: uptime, heap_free, peer_count, role, firmware, and all shared state
