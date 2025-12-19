@@ -29,5 +29,12 @@ services:
     volumes:
       - ./api/app:/app/app  # Hot reload in dev
 
+  dashboard:
+    build: ./dashboard
+    depends_on:
+      - api
+    ports:
+      - "3000:80"
+
 volumes:
   pgdata:
