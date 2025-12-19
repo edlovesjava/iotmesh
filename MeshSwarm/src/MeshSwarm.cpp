@@ -15,6 +15,7 @@ MeshSwarm::MeshSwarm()
     lastStateSync(0),
     lastDisplayUpdate(0),
     lastTelemetryPush(0),
+    lastStateTelemetryPush(0),
     bootTime(0),
     telemetryUrl(""),
     telemetryApiKey(""),
@@ -177,17 +178,78 @@ bool MeshSwarm::setState(const String& key, const String& value) {
   broadcastState(key);
   lastStateChange = key + "=" + value;
 
-  // Push telemetry on state change
+  // Push telemetry on state change (with debouncing)
+  unsigned long now = millis();
   if (telemetryEnabled) {
-    if (gatewayMode) {
-      pushTelemetry();
+    if (now - lastStateTelemetryPush >= STATE_TELEMETRY_MIN_INTERVAL) {
+      Serial.printf("[TELEM] State change push for %s=%s\n", key.c_str(), value.c_str());
+      if (gatewayMode) {
+        pushTelemetry();
+      } else {
+        sendTelemetryToGateway();
+      }
+      lastTelemetryPush = now;
+      lastStateTelemetryPush = now;
     } else {
-      sendTelemetryToGateway();
+      Serial.printf("[TELEM] Debounced %s=%s (wait %lums)\n", key.c_str(), value.c_str(),
+                    STATE_TELEMETRY_MIN_INTERVAL - (now - lastStateTelemetryPush));
     }
-    lastTelemetryPush = millis();
   }
 
   return true;
+}
+
+bool MeshSwarm::setStates(std::initializer_list<std::pair<String, String>> states) {
+  bool anyChanged = false;
+
+  for (const auto& kv : states) {
+    const String& key = kv.first;
+    const String& value = kv.second;
+
+    String oldValue = "";
+    uint32_t newVersion = 1;
+
+    if (sharedState.count(key)) {
+      oldValue = sharedState[key].value;
+      newVersion = sharedState[key].version + 1;
+
+      if (oldValue == value) {
+        continue;  // Skip unchanged values
+      }
+    }
+
+    StateEntry entry;
+    entry.value = value;
+    entry.version = newVersion;
+    entry.origin = myId;
+    entry.timestamp = millis();
+    sharedState[key] = entry;
+
+    triggerWatchers(key, value, oldValue);
+    broadcastState(key);
+    lastStateChange = key + "=" + value;
+    anyChanged = true;
+  }
+
+  // Push telemetry once for all changes (with debouncing)
+  if (anyChanged && telemetryEnabled) {
+    unsigned long now = millis();
+    if (now - lastStateTelemetryPush >= STATE_TELEMETRY_MIN_INTERVAL) {
+      Serial.println("[TELEM] State change push (batch)");
+      if (gatewayMode) {
+        pushTelemetry();
+      } else {
+        sendTelemetryToGateway();
+      }
+      lastTelemetryPush = now;
+      lastStateTelemetryPush = now;
+    } else {
+      Serial.printf("[TELEM] Debounced batch (wait %lums)\n",
+                    STATE_TELEMETRY_MIN_INTERVAL - (now - lastStateTelemetryPush));
+    }
+  }
+
+  return anyChanged;
 }
 
 String MeshSwarm::getState(const String& key, const String& defaultVal) {

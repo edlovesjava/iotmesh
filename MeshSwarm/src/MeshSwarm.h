@@ -83,6 +83,10 @@
 #define TELEMETRY_INTERVAL   30000
 #endif
 
+#ifndef STATE_TELEMETRY_MIN_INTERVAL
+#define STATE_TELEMETRY_MIN_INTERVAL  2000  // Min ms between state-triggered pushes
+#endif
+
 #ifndef FIRMWARE_VERSION
 #define FIRMWARE_VERSION     "1.0.0"
 #endif
@@ -139,6 +143,7 @@ public:
 
   // State management
   bool setState(const String& key, const String& value);
+  bool setStates(std::initializer_list<std::pair<String, String>> states);  // Batch update
   String getState(const String& key, const String& defaultVal = "");
   void watchState(const String& key, StateCallback callback);
   void broadcastFullState();
@@ -207,6 +212,7 @@ private:
   unsigned long lastStateSync;
   unsigned long lastDisplayUpdate;
   unsigned long lastTelemetryPush;
+  unsigned long lastStateTelemetryPush;  // For debouncing state-triggered pushes
   unsigned long bootTime;
 
   // Telemetry config

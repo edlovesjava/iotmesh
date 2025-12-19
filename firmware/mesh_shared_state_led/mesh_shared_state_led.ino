@@ -16,7 +16,7 @@
 // ============== LED CONFIGURATION ==============
 #define LED_STATE_PIN   2         // LED for shared state (led=1)
 #define LED_PEER_PIN    4         // LED for peer connectivity
-
+#define LED_MOTION_PIN  15        // LED for motion detect (motion=1)
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 bool lastPeerState = false;
@@ -29,10 +29,13 @@ void setup() {
   // LED setup
   pinMode(LED_STATE_PIN, OUTPUT);
   pinMode(LED_PEER_PIN, OUTPUT);
+  pinMode(LED_MOTION_PIN, OUTPUT);
   digitalWrite(LED_STATE_PIN, LOW);
   digitalWrite(LED_PEER_PIN, LOW);
+  digitalWrite(LED_MOTION_PIN, LOW);
   Serial.printf("[HW] State LED on GPIO%d\n", LED_STATE_PIN);
   Serial.printf("[HW] Peer LED on GPIO%d\n", LED_PEER_PIN);
+  Serial.printf("[HW] Motion LED on GPIO%d\n", LED_MOTION_PIN);
 
   // Watch for LED state changes
   swarm.watchState("led", [](const String& key, const String& value, const String& oldValue) {
@@ -40,6 +43,14 @@ void setup() {
     digitalWrite(LED_STATE_PIN, ledOn ? HIGH : LOW);
     Serial.printf("[LED] State changed: %s -> %s (LED %s)\n",
                   oldValue.c_str(), value.c_str(), ledOn ? "ON" : "OFF");
+  });
+
+  // Watch for motion state changes
+  swarm.watchState("motion", [](const String& key, const String& value, const String& oldValue) {
+    bool motionDetect = (value == "1" || value == "on" || value == "true");
+    digitalWrite(LED_MOTION_PIN, motionDetect ? HIGH : LOW);
+    Serial.printf("[MOTION] State changed: %s -> %s (LED %s)\n",
+                  oldValue.c_str(), value.c_str(), motionDetect ? "ON" : "OFF");
   });
 
   // Check peer connectivity in loop
