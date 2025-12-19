@@ -6,6 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ESP32 mesh networking project using painlessMesh for self-organizing, self-healing networks with distributed shared state. Nodes automatically discover peers, elect coordinators, and synchronize key-value state across the network.
 
+## Repository Structure (Monorepo)
+
+```
+iotmesh/
+├── firmware/                    # ESP32/Arduino sketches
+│   ├── mesh_shared_state/       # Full-featured reference node
+│   ├── mesh_shared_state_button/
+│   ├── mesh_shared_state_led/
+│   ├── mesh_shared_state_watcher/
+│   ├── mesh_shared_state_pir/
+│   ├── mesh_shared_state_dht11/
+│   ├── mesh_swarm_base/
+│   ├── pir_nano/               # Arduino Nano PIR module (legacy)
+│   └── pir_nano_test/
+├── MeshSwarm/                   # Arduino library
+├── server/                      # Telemetry server (future)
+│   ├── api/                     # FastAPI backend
+│   └── dashboard/               # React frontend
+├── docs/                        # Documentation
+└── README.md
+```
+
 ## Development Environment
 
 - **IDE**: Arduino IDE
@@ -64,16 +86,18 @@ JSON messages over painlessMesh with type field:
 - `MSG_STATE_SYNC` (3): Full state dump
 - `MSG_STATE_REQ` (4): Request state from peers
 - `MSG_COMMAND` (5): Custom commands
+- `MSG_TELEMETRY` (6): Node telemetry to gateway
 
 ## Sketch Variants
 
-The mesh_shared_state_* sketches share ~90% code with different hardware configs:
+Located in `firmware/`, the mesh_shared_state_* sketches share ~90% code with different hardware configs:
 - `mesh_shared_state`: Full features (button + LED)
 - `mesh_shared_state_button`: Button input only
 - `mesh_shared_state_led`: LED output only
 - `mesh_shared_state_watcher`: Observer, no I/O
 - `mesh_shared_state_pir`: PIR motion sensor (direct GPIO4)
 - `mesh_shared_state_dht11`: DHT11 temperature/humidity sensor (GPIO4)
+- `mesh_gateway`: Telemetry gateway (bridges mesh to server via WiFi)
 
 Enable/disable features via defines:
 ```cpp
@@ -105,7 +129,9 @@ Nano acts as I2C slave at 0x42 with register interface:
 
 ## Serial Commands (ESP32 nodes)
 
-All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `reboot`
+All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `scan`, `reboot`
+
+Telemetry-enabled nodes add: `telem`, `push`
 
 PIR node adds: `pir`
 
@@ -162,3 +188,30 @@ watchState("motion", [](const String& key, const String& value, const String& ol
   // React to motion state
 });
 ```
+
+### Telemetry Architecture
+
+**Gateway Pattern**: A dedicated gateway node bridges mesh to server.
+- Only the gateway needs WiFi credentials
+- Other nodes send telemetry via mesh to the gateway
+- Gateway pushes all telemetry to the server via HTTP
+
+**Gateway node setup** (firmware/mesh_gateway):
+```cpp
+swarm.begin("Gateway");
+swarm.connectToWiFi("SSID", "password");
+swarm.setGatewayMode(true);
+swarm.setTelemetryServer("http://192.168.1.100:8000");
+swarm.enableTelemetry(true);
+```
+
+**Regular node setup** (no WiFi needed):
+```cpp
+swarm.begin();
+swarm.enableTelemetry(true);  // Sends via mesh to gateway
+```
+
+Telemetry pushes:
+- Every 30 seconds (configurable)
+- Immediately on state change
+- Includes: uptime, heap_free, peer_count, role, firmware, and all shared state
