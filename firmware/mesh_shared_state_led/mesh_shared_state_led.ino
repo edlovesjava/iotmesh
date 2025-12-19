@@ -23,7 +23,8 @@ bool lastPeerState = false;
 
 // ============== SETUP ==============
 void setup() {
-  swarm.begin();
+  swarm.begin("LED");
+  swarm.enableTelemetry(true);
 
   // LED setup
   pinMode(LED_STATE_PIN, OUTPUT);

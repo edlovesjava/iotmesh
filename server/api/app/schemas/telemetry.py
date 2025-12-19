@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 
 class TelemetryIn(BaseModel):
+    name: str | None = None
     uptime: int | None = None
     heap_free: int | None = None
     peer_count: int | None = None

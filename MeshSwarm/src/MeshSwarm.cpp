@@ -682,6 +682,7 @@ void MeshSwarm::pushTelemetry() {
 
   // Build JSON payload
   JsonDocument doc;
+  doc["name"] = myName;
   doc["uptime"] = (millis() - bootTime) / 1000;
   doc["heap_free"] = ESP.getFreeHeap();
   doc["peer_count"] = getPeerCount();
@@ -715,6 +716,7 @@ void MeshSwarm::setGatewayMode(bool enable) {
 void MeshSwarm::sendTelemetryToGateway() {
   // Build telemetry data
   JsonDocument data;
+  data["name"] = myName;
   data["uptime"] = (millis() - bootTime) / 1000;
   data["heap_free"] = ESP.getFreeHeap();
   data["peer_count"] = getPeerCount();
@@ -737,6 +739,12 @@ void MeshSwarm::sendTelemetryToGateway() {
 void MeshSwarm::handleTelemetry(uint32_t from, JsonObject& data) {
   // Gateway received telemetry from another node - push to server
   Serial.printf("[GATEWAY] Received telemetry from %s\n", nodeIdToName(from).c_str());
+
+  // Debug: dump the telemetry payload
+  String debugPayload;
+  serializeJson(data, debugPayload);
+  Serial.printf("[GATEWAY] Payload: %s\n", debugPayload.c_str());
+
   pushTelemetryForNode(from, data);
 }
 

@@ -32,7 +32,8 @@
     <div class="section">
         <h2>Push Test Telemetry</h2>
         <input type="text" id="nodeId" placeholder="Node ID (e.g., abc123)" value="test001">
-        <textarea id="telemetryData" rows="12">{
+        <textarea id="telemetryData" rows="13">{
+  "name": "TestNode",
   "uptime": 3600,
   "heap_free": 245000,
   "peer_count": 2,
@@ -105,7 +106,9 @@ curl http://localhost:8000/api/v1/nodes/test001/history?hours=1</pre>
         }
 
         function randomizeTelemetry() {
+            const names = ['PIR-Front', 'LED-Kitchen', 'Sensor-1', 'Gateway', 'DHT-Garage'];
             const data = {
+                name: names[Math.floor(Math.random() * names.length)],
                 uptime: Math.floor(Math.random() * 86400),
                 heap_free: 200000 + Math.floor(Math.random() * 50000),
                 peer_count: Math.floor(Math.random() * 5),

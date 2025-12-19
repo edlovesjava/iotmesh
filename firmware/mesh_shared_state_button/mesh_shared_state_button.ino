@@ -63,7 +63,8 @@ void handleButtons() {
 
 // ============== SETUP ==============
 void setup() {
-  swarm.begin();
+  swarm.begin("Button");
+  swarm.enableTelemetry(true);
 
   // Button setup - both use internal pull-up
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
