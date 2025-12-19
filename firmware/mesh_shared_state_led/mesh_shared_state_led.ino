@@ -68,12 +68,15 @@ void setup() {
     String ledState = swarm.getState("led", "0");
     bool ledOn = (ledState == "1");
     int peerCount = swarm.getPeerCount();
+    String motionDetect = swarm.getState("motion", "0");
+    bool motionSet = (motionDetect == "1");
 
     display.println("Mode: LED OUTPUT");
     display.println("---------------------");
     display.printf("led=%s\n", ledState.c_str());
     display.printf("State LED: %s\n", ledOn ? "ON" : "OFF");
     display.printf("Peer LED:  %s (%d)\n", peerCount > 0 ? "ON" : "OFF", peerCount);
+    display.printf("Motion LED:  %s (%d)\n", motionSet > 0 ? "ON" : "OFF");
   });
 }
 
