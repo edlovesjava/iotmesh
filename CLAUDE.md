@@ -146,9 +146,18 @@ DHT11 node adds: `dht`
 - LED: GPIO2
 
 ### PIR Sensor (mesh_shared_state_pir)
-- PIR OUT: GPIO4
-- PIR VCC: 3.3V or 5V
-- PIR GND: GND
+
+Supports two sensor types (select via `#define` in sketch):
+
+**AM312 (default)** - Mini 3.3V sensor, low power (~60μA), 5s warmup
+- VCC: 3.3V (native, no regulator needed)
+- GND: GND
+- OUT: GPIO4
+
+**HC-SR501** - Standard adjustable sensor, 30s warmup
+- VCC: 5V (has onboard regulator)
+- GND: GND
+- OUT: GPIO4
 
 ### DHT11 Sensor (mesh_shared_state_dht11)
 - DHT DATA: GPIO4 (with 10k pull-up to VCC)
