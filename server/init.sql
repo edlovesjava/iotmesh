@@ -55,3 +55,21 @@ CREATE INDEX idx_nodes_online ON nodes (is_online);
 -- Retention: 30 days telemetry, 90 days state history
 SELECT add_retention_policy('telemetry', INTERVAL '30 days');
 SELECT add_retention_policy('state_history', INTERVAL '90 days');
+
+-- Firmware storage for OTA updates
+CREATE TABLE firmware (
+    id SERIAL PRIMARY KEY,
+    node_type VARCHAR(30) NOT NULL,      -- pir, led, button, gateway, etc.
+    version VARCHAR(20) NOT NULL,
+    hardware VARCHAR(10) DEFAULT 'ESP32',
+    filename VARCHAR(100) NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    md5_hash VARCHAR(32) NOT NULL,
+    binary_data BYTEA NOT NULL,
+    release_notes TEXT,
+    is_stable BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(node_type, version, hardware)
+);
+
+CREATE INDEX idx_firmware_type_version ON firmware(node_type, version DESC);
