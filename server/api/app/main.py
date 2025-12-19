@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from .config import settings
 from .database import async_session
 from .models import Node
-from .routers import nodes_router, telemetry_router, state_router, firmware_router
+from .routers import nodes_router, telemetry_router, state_router, firmware_router, ota_router
 
 
 # Background task for offline detection
@@ -61,6 +61,7 @@ app.include_router(nodes_router)
 app.include_router(telemetry_router)
 app.include_router(state_router)
 app.include_router(firmware_router)
+app.include_router(ota_router)
 
 
 @app.get("/health")

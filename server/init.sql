@@ -73,3 +73,33 @@ CREATE TABLE firmware (
 );
 
 CREATE INDEX idx_firmware_type_version ON firmware(node_type, version DESC);
+
+-- OTA update jobs
+CREATE TABLE ota_updates (
+    id SERIAL PRIMARY KEY,
+    firmware_id INTEGER REFERENCES firmware(id) ON DELETE CASCADE,
+    target_node_id VARCHAR(10),              -- NULL = all nodes of type
+    target_node_type VARCHAR(30),
+    status VARCHAR(20) DEFAULT 'pending',    -- pending/distributing/completed/failed
+    force_update BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ
+);
+
+-- Per-node OTA update progress
+CREATE TABLE ota_node_status (
+    id SERIAL PRIMARY KEY,
+    update_id INTEGER REFERENCES ota_updates(id) ON DELETE CASCADE,
+    node_id VARCHAR(10) NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending',    -- pending/downloading/completed/failed
+    current_part INTEGER DEFAULT 0,
+    total_parts INTEGER,
+    error_message TEXT,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    UNIQUE(update_id, node_id)
+);
+
+CREATE INDEX idx_ota_updates_status ON ota_updates(status);
+CREATE INDEX idx_ota_node_status_update ON ota_node_status(update_id);
