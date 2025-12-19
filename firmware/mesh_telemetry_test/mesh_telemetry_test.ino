@@ -2,17 +2,12 @@
  * Telemetry Test Node
  *
  * Test sketch for verifying telemetry server connectivity.
- * Update WIFI_SSID, WIFI_PASSWORD, and TELEMETRY_URL for your network.
+ * Copy firmware/credentials.h.example to firmware/credentials.h
+ * and fill in your WiFi credentials.
  */
 
 #include <MeshSwarm.h>
-
-// ============== UPDATE THESE FOR YOUR NETWORK ==============
-#define WIFI_SSID     "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-
-// Telemetry server running on your local machine
-#define TELEMETRY_URL "http://10.0.0.71:8000"
+#include "../credentials.h"  // WiFi credentials (gitignored)
 
 // Push every 10 seconds for testing (faster feedback)
 #define TELEMETRY_PUSH_INTERVAL 10000

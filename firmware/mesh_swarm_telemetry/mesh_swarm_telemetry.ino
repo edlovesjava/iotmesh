@@ -25,15 +25,7 @@
  */
 
 #include <MeshSwarm.h>
-
-// ============== CONFIGURATION ==============
-// WiFi credentials for telemetry server access
-#define WIFI_SSID     "YourWiFi"
-#define WIFI_PASSWORD "YourPassword"
-
-// Telemetry server (Phase 1 server address)
-#define TELEMETRY_URL "http://192.168.1.100:8000"
-#define TELEMETRY_KEY ""  // Optional API key
+#include "../credentials.h"  // WiFi credentials (gitignored)
 
 // Telemetry interval (milliseconds)
 #define TELEMETRY_PUSH_INTERVAL 30000  // 30 seconds

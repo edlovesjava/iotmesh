@@ -29,15 +29,7 @@
  */
 
 #include <MeshSwarm.h>
-
-// ============== CONFIGURATION ==============
-// WiFi credentials - only the gateway needs these!
-#define WIFI_SSID     "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-
-// Telemetry server
-#define TELEMETRY_URL "http://10.0.0.71:8000"
-#define TELEMETRY_KEY ""  // Optional API key
+#include "../credentials.h"  // WiFi credentials (gitignored)
 
 // Gateway's own telemetry interval (milliseconds)
 #define TELEMETRY_PUSH_INTERVAL 30000  // 30 seconds

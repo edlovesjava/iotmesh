@@ -31,3 +31,7 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Credentials (WiFi passwords, API keys)
+firmware/credentials.h
+**/credentials.h
