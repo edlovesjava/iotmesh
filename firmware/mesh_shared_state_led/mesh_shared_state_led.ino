@@ -12,6 +12,7 @@
  */
 
 #include <MeshSwarm.h>
+#include <esp_ota_ops.h>
 
 // ============== LED CONFIGURATION ==============
 #define LED_STATE_PIN   2         // LED for shared state (led=1)
@@ -23,10 +24,12 @@ bool lastPeerState = false;
 
 // ============== SETUP ==============
 void setup() {
+  // Mark OTA partition as valid (enables automatic rollback on boot failure)
+  esp_ota_mark_app_valid_cancel_rollback();
+
   swarm.begin("LED");
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive("led");  // Enable OTA updates for this node type
-
 
   // LED setup
   pinMode(LED_STATE_PIN, OUTPUT);

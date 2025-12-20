@@ -12,6 +12,7 @@
  */
 
 #include <MeshSwarm.h>
+#include <esp_ota_ops.h>
 
 // ============== BUTTON CONFIGURATION ==============
 #define BOOT_BUTTON_PIN    0      // Boot button on most ESP32 boards
@@ -63,10 +64,12 @@ void handleButtons() {
 
 // ============== SETUP ==============
 void setup() {
+  // Mark OTA partition as valid (enables automatic rollback on boot failure)
+  esp_ota_mark_app_valid_cancel_rollback();
+
   swarm.begin("Button");
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive("button");  // Enable OTA updates for this node type
-
 
   // Button setup - both use internal pull-up
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);

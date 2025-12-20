@@ -18,6 +18,7 @@
  */
 
 #include <MeshSwarm.h>
+#include <esp_ota_ops.h>
 
 // ============== PIR SENSOR TYPE ==============
 // Uncomment ONE of these to select your sensor:
@@ -93,6 +94,9 @@ void pollPir() {
 
 // ============== SETUP ==============
 void setup() {
+  // Mark OTA partition as valid (enables automatic rollback on boot failure)
+  esp_ota_mark_app_valid_cancel_rollback();
+
   swarm.begin("PIR");
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive("pir");  // Enable OTA updates for this node type

@@ -15,6 +15,7 @@
 
 #include <MeshSwarm.h>
 #include <DHT.h>
+#include <esp_ota_ops.h>
 
 // ============== DHT CONFIGURATION ==============
 #define DHT_PIN         4         // GPIO4 for DHT11 data
@@ -87,6 +88,9 @@ void pollDht() {
 
 // ============== SETUP ==============
 void setup() {
+  // Mark OTA partition as valid (enables automatic rollback on boot failure)
+  esp_ota_mark_app_valid_cancel_rollback();
+
   swarm.begin("DHTNode");
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive("dht");

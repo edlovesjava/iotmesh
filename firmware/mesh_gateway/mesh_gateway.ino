@@ -30,6 +30,7 @@
  */
 
 #include <MeshSwarm.h>
+#include <esp_ota_ops.h>
 #include "../credentials.h"  // WiFi credentials (gitignored)
 
 // Gateway's own telemetry interval (milliseconds)
@@ -39,6 +40,9 @@
 MeshSwarm swarm;
 
 void setup() {
+  // Mark OTA partition as valid (enables automatic rollback on boot failure)
+  esp_ota_mark_app_valid_cancel_rollback();
+
   // Initialize mesh swarm with a name
   swarm.begin("Gateway");
 
