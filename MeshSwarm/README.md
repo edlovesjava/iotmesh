@@ -327,16 +327,25 @@ void setup() {
 
 ## Examples
 
-See the parent repository for complete example sketches:
+This library includes the following example sketches (File → Examples → MeshSwarm):
 
-- `mesh_shared_state` - Full features (button + LED)
-- `mesh_shared_state_button` - Button input node
-- `mesh_shared_state_led` - LED output node
-- `mesh_shared_state_watcher` - Observer node
-- `mesh_shared_state_pir` - PIR motion sensor
-- `mesh_shared_state_dht11` - Temperature/humidity sensor
-- `mesh_gateway` - Gateway with telemetry and OTA distribution
+| Example | Description |
+|---------|-------------|
+| **BasicNode** | Minimal mesh node with OLED display |
+| **ButtonNode** | Button input that publishes to mesh |
+| **LedNode** | LED controlled by mesh state |
+| **SensorNode** | DHT11 temperature/humidity sensor |
+| **WatcherNode** | Observer that logs all state changes |
+| **GatewayNode** | WiFi bridge with telemetry and OTA |
+
+## Related Projects
+
+- [iotmesh](https://github.com/edlovesjava/iotmesh) - Complete IoT mesh application with server, dashboard, and OTA system
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-MIT License
+MIT License - see [LICENSE](LICENSE) file for details.
