@@ -10,6 +10,8 @@ A self-organizing ESP32 mesh network library with distributed shared state synch
 - **Distributed shared state**: Key-value store synchronized across all nodes
 - **State watchers**: Register callbacks to react to state changes
 - **Conflict resolution**: Version numbers + origin ID ensure deterministic convergence
+- **OTA updates**: Receive firmware updates via mesh from gateway
+- **Telemetry**: Send metrics to server via gateway node
 - **OLED display**: Built-in support for SSD1306 128x64 displays
 - **Serial console**: Built-in command interface for debugging and control
 
@@ -248,6 +250,81 @@ When multiple nodes update the same key simultaneously:
 
 This ensures all nodes converge to the same state without a central authority.
 
+## OTA Updates
+
+### Receiving OTA Updates (Nodes)
+
+```cpp
+#include <MeshSwarm.h>
+#include <esp_ota_ops.h>
+
+void setup() {
+  // Mark current firmware as valid (enables auto-rollback on boot failure)
+  esp_ota_mark_app_valid_cancel_rollback();
+
+  swarm.begin("PIR");
+  swarm.enableOTAReceive("pir");  // Register to receive OTA for this role
+}
+```
+
+### Distributing OTA Updates (Gateway)
+
+```cpp
+void setup() {
+  esp_ota_mark_app_valid_cancel_rollback();
+  swarm.begin("Gateway");
+  swarm.connectToWiFi(ssid, password);
+  swarm.setGatewayMode(true);
+  swarm.enableOTADistribution(true);
+}
+
+void loop() {
+  swarm.update();
+  swarm.checkForOTAUpdates();  // Poll server every 60 seconds
+}
+```
+
+### OTA Methods
+
+| Method | Description |
+|--------|-------------|
+| `enableOTAReceive(role)` | Enable node to receive OTA for given role |
+| `enableOTADistribution(bool)` | Enable gateway OTA distribution |
+| `checkForOTAUpdates()` | Poll server for pending updates (gateway only) |
+
+## Telemetry
+
+### Sending Telemetry via Gateway
+
+```cpp
+void setup() {
+  swarm.begin("Sensor");
+  swarm.enableTelemetry(true);  // Sends via mesh to gateway
+}
+```
+
+### Gateway Mode
+
+```cpp
+void setup() {
+  swarm.begin("Gateway");
+  swarm.connectToWiFi(ssid, password);
+  swarm.setGatewayMode(true);
+  swarm.setTelemetryServer("http://server:8000");
+  swarm.enableTelemetry(true);
+}
+```
+
+### Telemetry Methods
+
+| Method | Description |
+|--------|-------------|
+| `enableTelemetry(bool)` | Enable/disable telemetry |
+| `setTelemetryServer(url)` | Set server URL (gateway only) |
+| `setTelemetryInterval(ms)` | Set push interval (default 30s) |
+| `setGatewayMode(bool)` | Enable gateway mode |
+| `connectToWiFi(ssid, pass)` | Connect to WiFi (gateway only) |
+
 ## Examples
 
 See the parent repository for complete example sketches:
@@ -258,6 +335,7 @@ See the parent repository for complete example sketches:
 - `mesh_shared_state_watcher` - Observer node
 - `mesh_shared_state_pir` - PIR motion sensor
 - `mesh_shared_state_dht11` - Temperature/humidity sensor
+- `mesh_gateway` - Gateway with telemetry and OTA distribution
 
 ## License
 

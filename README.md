@@ -14,6 +14,8 @@ This project implements a mesh network where multiple ESP32 nodes can discover e
 - **Distributed shared state**: Key-value store synchronized across all nodes
 - **State watchers**: Register callbacks to react to state changes
 - **Conflict resolution**: Version numbers + origin ID ensure deterministic state convergence
+- **OTA updates**: Server-push firmware updates via gateway distribution
+- **Telemetry**: Gateway bridges mesh telemetry to server via HTTP
 - **OLED display**: Real-time status display on each node
 - **Serial console**: Debug and control nodes via serial commands
 
@@ -388,6 +390,58 @@ swarm.watchState("*", [](const String& key, const String& value, const String& o
   Serial.printf("Any state: %s = %s\n", key.c_str(), value.c_str());
 });
 ```
+
+## OTA Updates
+
+The mesh supports over-the-air firmware updates distributed from the server through the gateway node.
+
+### How It Works
+
+1. Upload firmware binary to server via API
+2. Create an OTA update job targeting a node type (e.g., "pir")
+3. Gateway polls for pending updates every 60 seconds
+4. Gateway distributes firmware to matching nodes via painlessMesh OTA
+5. Nodes automatically reboot with new firmware
+
+### Node Types & OTA Roles
+
+| Node | OTA Role | Description |
+|------|----------|-------------|
+| PIR | `pir` | Motion sensor |
+| LED | `led` | LED controller |
+| Button | `button` | Button input |
+| Button2 | `button2` | Second button |
+| DHT11 | `dht` | Temp/humidity sensor |
+| Watcher | `watcher` | Network observer |
+| Gateway | (distributor) | Distributes OTA updates |
+
+### Safety Features
+
+- **MD5 matching**: Nodes skip updates if firmware hash matches current
+- **Role matching**: Only nodes with matching role receive updates
+- **Force flag**: Override MD5 check for rollbacks
+- **Auto-rollback**: ESP32 reverts to previous firmware if new firmware fails to boot
+
+See [OTA Documentation](docs/ota_update_system.md) for full API reference.
+
+## Telemetry Server
+
+A FastAPI backend collects telemetry from mesh nodes and provides a web dashboard for monitoring.
+
+### Components
+
+- **API Server** (port 8000): REST API for telemetry, state, and OTA management
+- **Dashboard** (port 3000): React web UI for monitoring nodes
+- **Database**: TimescaleDB for time-series storage
+
+### Quick Start
+
+```bash
+cd server
+docker-compose up -d
+```
+
+See [Server Documentation](server/README.md) for details.
 
 ## License
 

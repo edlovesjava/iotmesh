@@ -86,6 +86,8 @@ The docker-compose configuration mounts the `api/app` directory for hot reload d
 
 ## API Endpoints
 
+### Telemetry & State
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/nodes` | GET | List all registered nodes |
@@ -93,6 +95,19 @@ The docker-compose configuration mounts the `api/app` directory for hot reload d
 | `/api/v1/nodes/{id}/telemetry` | POST | Submit telemetry data |
 | `/api/v1/state` | GET | Get current shared state |
 | `/health` | GET | Health check |
+
+### Firmware & OTA Updates
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/firmware/upload` | POST | Upload firmware binary |
+| `/api/v1/firmware` | GET | List all firmware versions |
+| `/api/v1/firmware/{id}` | GET | Get firmware metadata |
+| `/api/v1/firmware/{id}/download` | GET | Download firmware binary |
+| `/api/v1/ota/updates` | POST | Create OTA update job |
+| `/api/v1/ota/updates` | GET | List all update jobs |
+| `/api/v1/ota/updates/pending` | GET | Gateway polls this |
+| `/api/v1/ota/updates/{id}` | GET | Get update status |
 
 See [API Documentation](http://localhost:8000/docs) for full details.
 
@@ -102,5 +117,18 @@ See [API Documentation](http://localhost:8000/docs) for full details.
 - `telemetry` - Time-series metrics (heap, uptime, peer count)
 - `current_state` - Latest shared state per node/key
 - `state_history` - Historical state changes
+- `firmware` - Uploaded firmware binaries with metadata
+- `ota_updates` - OTA update jobs and their status
+- `ota_node_status` - Per-node progress for each update
 
 See [init.sql](init.sql) for full schema.
+
+## OTA Update Workflow
+
+1. **Upload firmware**: `POST /api/v1/firmware/upload` with binary and metadata
+2. **Create update job**: `POST /api/v1/ota/updates` with firmware_id and target node type
+3. **Gateway polls**: Gateway checks `/api/v1/ota/updates/pending` every 60 seconds
+4. **Distribution**: Gateway streams firmware chunks to matching nodes
+5. **Completion**: Gateway reports `/api/v1/ota/updates/{id}/complete`
+
+See [OTA Documentation](../docs/ota_update_system.md) for details.
