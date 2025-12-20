@@ -25,6 +25,8 @@ bool lastPeerState = false;
 void setup() {
   swarm.begin("LED");
   swarm.enableTelemetry(true);
+  swarm.enableOTAReceive("led");  // Enable OTA updates for this node type
+
 
   // LED setup
   pinMode(LED_STATE_PIN, OUTPUT);

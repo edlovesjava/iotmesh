@@ -29,11 +29,11 @@ unsigned long buttonPressCount = 0;
 
 // ============== BUTTON HANDLING ==============
 void toggleLed(const char* source) {
-  String currentLed = swarm.getState("led", "0");
+  String currentLed = swarm.getState("button2", "0");
   String newLed = (currentLed == "1") ? "0" : "1";
-  swarm.setState("led", newLed);
+  swarm.setState("button2", newLed);
   buttonPressCount++;
-  Serial.printf("[BUTTON] %s pressed! LED: %s -> %s (count: %lu)\n",
+  Serial.printf("[BUTTON2] %s pressed! Val: %s -> %s (count: %lu)\n",
                 source, currentLed.c_str(), newLed.c_str(), buttonPressCount);
 }
 
@@ -63,9 +63,9 @@ void handleButtons() {
 
 // ============== SETUP ==============
 void setup() {
-  swarm.begin("Button");
+  swarm.begin("Button2");
   swarm.enableTelemetry(true);
-  swarm.enableOTAReceive("button");  // Enable OTA updates for this node type
+  swarm.enableOTAReceive("button2");  // Enable OTA updates for this node type
 
 
   // Button setup - both use internal pull-up
