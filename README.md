@@ -23,6 +23,8 @@ This project implements a mesh network where multiple ESP32 nodes can discover e
 
 All sketch variants are built on the **MeshSwarm** library, which encapsulates the mesh networking, shared state, display, and serial command functionality. This reduces each sketch from ~680 lines to 34-150 lines.
 
+**Repository**: https://github.com/edlovesjava/MeshSwarm
+
 ### Library Features
 
 - `begin()` / `update()` - Initialize and run the mesh
@@ -34,20 +36,21 @@ All sketch variants are built on the **MeshSwarm** library, which encapsulates t
 
 ### Installation
 
-Copy the `MeshSwarm/` folder to your Arduino libraries directory:
+Clone or download the MeshSwarm library from GitHub:
 
 ```bash
+# Clone to Arduino libraries directory
 # macOS
-cp -r MeshSwarm ~/Documents/Arduino/libraries/
+git clone https://github.com/edlovesjava/MeshSwarm ~/Documents/Arduino/libraries/MeshSwarm
 
 # Linux
-cp -r MeshSwarm ~/Arduino/libraries/
+git clone https://github.com/edlovesjava/MeshSwarm ~/Arduino/libraries/MeshSwarm
 
-# Windows
-# Copy MeshSwarm folder to Documents\Arduino\libraries\
+# Windows (PowerShell)
+git clone https://github.com/edlovesjava/MeshSwarm "$env:USERPROFILE\Documents\Arduino\libraries\MeshSwarm"
 ```
 
-Restart Arduino IDE after copying.
+Restart Arduino IDE after cloning.
 
 ### Basic Usage
 
@@ -228,7 +231,7 @@ swarm.watchState("*", [](const String& key, const String& value, const String& o
 ## Quick Start
 
 1. Install required libraries in Arduino IDE (Library Manager)
-2. Copy `MeshSwarm/` folder to your Arduino libraries directory (see Installation above)
+2. Clone the MeshSwarm library from https://github.com/edlovesjava/MeshSwarm (see Installation above)
 3. Restart Arduino IDE
 4. Select "ESP32 Dev Module" as your board
 5. Flash `mesh_shared_state_button` to one ESP32
