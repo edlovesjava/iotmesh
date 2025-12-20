@@ -89,6 +89,7 @@ void pollDht() {
 void setup() {
   swarm.begin("DHTNode");
   swarm.enableTelemetry(true);
+  swarm.enableOTAReceive("dht");
 
   // DHT sensor setup
   dht.begin();
