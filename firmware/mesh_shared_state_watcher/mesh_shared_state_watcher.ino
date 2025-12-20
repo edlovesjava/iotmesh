@@ -10,13 +10,19 @@
  */
 
 #include <MeshSwarm.h>
+#include <esp_ota_ops.h>
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 
 // ============== SETUP ==============
 void setup() {
-  swarm.begin();
+  // Mark OTA partition as valid (enables automatic rollback on boot failure)
+  esp_ota_mark_app_valid_cancel_rollback();
+
+  swarm.begin("Watcher");
+  swarm.enableTelemetry(true);
+  swarm.enableOTAReceive("watcher");  // Enable OTA updates for this node type
 
   Serial.println("[MODE] Watcher - monitoring state changes");
 
