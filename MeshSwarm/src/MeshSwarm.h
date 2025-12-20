@@ -91,6 +91,15 @@
 #define FIRMWARE_VERSION     "1.0.0"
 #endif
 
+// OTA Configuration
+#ifndef OTA_POLL_INTERVAL
+#define OTA_POLL_INTERVAL    60000   // Poll for updates every 60 seconds
+#endif
+
+#ifndef OTA_PART_SIZE
+#define OTA_PART_SIZE        1024    // Bytes per OTA chunk
+#endif
+
 // ============== MESSAGE TYPES ==============
 enum MsgType {
   MSG_HEARTBEAT  = 1,
@@ -115,6 +124,21 @@ struct Peer {
   String role;
   unsigned long lastSeen;
   bool alive;
+};
+
+// OTA update info from server
+struct OTAUpdateInfo {
+  int updateId;
+  int firmwareId;
+  String nodeType;
+  String version;
+  String hardware;
+  String md5;
+  int numParts;
+  int sizeBytes;
+  String targetNodeId;  // Empty = all nodes of type
+  bool force;
+  bool active;
 };
 
 // State change callback type
@@ -191,6 +215,14 @@ public:
   void setGatewayMode(bool enable);
   bool isGateway() { return gatewayMode; }
 
+  // OTA distribution (gateway mode)
+  void enableOTADistribution(bool enable);
+  bool isOTADistributionEnabled() { return otaDistributionEnabled; }
+  void checkForOTAUpdates();  // Call from loop() to poll for updates
+
+  // OTA reception (node mode)
+  void enableOTAReceive(const String& role);
+
 private:
   // Core objects
   painlessMesh mesh;
@@ -221,6 +253,15 @@ private:
   unsigned long telemetryInterval;
   bool telemetryEnabled;
   bool gatewayMode;
+
+  // OTA distribution state (gateway)
+  bool otaDistributionEnabled;
+  unsigned long lastOTACheck;
+  OTAUpdateInfo currentOTAUpdate;
+  uint8_t* otaFirmwareBuffer;
+  size_t otaFirmwareSize;
+  int otaLastPartSent;        // Track highest part number sent
+  bool otaTransferStarted;    // True once first chunk is sent
 
   // Custom hooks
   std::vector<LoopCallback> loopCallbacks;
@@ -259,6 +300,16 @@ private:
 
   String createMsg(MsgType type, JsonDocument& data);
   String nodeIdToName(uint32_t id);
+
+  // OTA distribution methods (gateway)
+  bool pollPendingOTAUpdates();
+  bool downloadOTAFirmware(int firmwareId);
+  void startOTADistribution();
+  void reportOTAProgress(const String& nodeId, int currentPart, int totalParts, const String& status, const String& error = "");
+  void reportOTAStart(int updateId);
+  void reportOTAComplete(int updateId);
+  void reportOTAFail(int updateId, const String& error);
+  void cleanupOTABuffer();
 };
 
 #endif // MESH_SWARM_H

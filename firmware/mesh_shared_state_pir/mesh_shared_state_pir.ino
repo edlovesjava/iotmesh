@@ -95,6 +95,7 @@ void pollPir() {
 void setup() {
   swarm.begin("PIR");
   swarm.enableTelemetry(true);
+  swarm.enableOTAReceive("pir");  // Enable OTA updates for this node type
   bootTime = millis();
 
   // PIR pin setup
@@ -142,6 +143,7 @@ void setup() {
       Serial.printf("Window: %dms\n", MOTION_WINDOW_MS);
       Serial.printf("Zone: %s\n", MOTION_ZONE);
       Serial.printf("Raw pin: %s\n", digitalRead(PIR_PIN) ? "HIGH" : "LOW");
+   //   Serial.printf("Uptime: %lu sec\n", (now - bootTime) / 1000);
       Serial.println();
       return true;
     }

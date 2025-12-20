@@ -14,6 +14,7 @@
  *   - Receives MSG_TELEMETRY from other nodes
  *   - Pushes telemetry to server for all nodes
  *   - Also pushes its own telemetry
+ *   - OTA firmware distribution to mesh nodes
  *
  * Hardware:
  *   - ESP32 Dev Module
@@ -50,6 +51,9 @@ void setup() {
   swarm.setTelemetryInterval(TELEMETRY_PUSH_INTERVAL);
   swarm.enableTelemetry(true);
 
+  // Enable OTA distribution (gateway polls server and distributes to mesh)
+  swarm.enableOTADistribution(true);
+
   Serial.println();
   Serial.println("========================================");
   Serial.println("       MESH GATEWAY NODE");
@@ -65,6 +69,9 @@ void setup() {
 void loop() {
   swarm.update();
 
+  // Check for OTA updates (polls every OTA_POLL_INTERVAL)
+  swarm.checkForOTAUpdates();
+
   // Show WiFi connection status once
   static bool wifiReported = false;
   if (!wifiReported && swarm.isWiFiConnected()) {
@@ -74,6 +81,7 @@ void loop() {
     Serial.printf("[GATEWAY] IP: %s\n", WiFi.localIP().toString().c_str());
     Serial.printf("[GATEWAY] Server: %s\n", TELEMETRY_URL);
     Serial.println("[GATEWAY] Ready to receive telemetry from mesh");
+    Serial.println("[GATEWAY] OTA distribution enabled");
     Serial.println("========================================");
     Serial.println();
     wifiReported = true;

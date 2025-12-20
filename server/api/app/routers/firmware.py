@@ -1,5 +1,5 @@
 import hashlib
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Header
 from fastapi.responses import Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -138,20 +138,54 @@ async def get_firmware(firmware_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{firmware_id}/download")
-async def download_firmware(firmware_id: int, db: AsyncSession = Depends(get_db)):
-    """Download firmware binary file."""
+async def download_firmware(
+    firmware_id: int,
+    range: str | None = Header(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download firmware binary file. Supports Range header for partial downloads."""
     result = await db.execute(select(Firmware).where(Firmware.id == firmware_id))
     firmware = result.scalar_one_or_none()
 
     if not firmware:
         raise HTTPException(status_code=404, detail="Firmware not found")
 
+    binary_data = firmware.binary_data
+    total_size = firmware.size_bytes
+
+    # Handle Range header for partial content requests
+    if range and range.startswith("bytes="):
+        range_spec = range[6:]  # Remove "bytes=" prefix
+        if "-" in range_spec:
+            parts = range_spec.split("-")
+            start = int(parts[0]) if parts[0] else 0
+            end = int(parts[1]) if parts[1] else total_size - 1
+
+            # Validate range
+            if start >= total_size or end >= total_size or start > end:
+                raise HTTPException(status_code=416, detail="Range Not Satisfiable")
+
+            # Return partial content
+            partial_data = binary_data[start:end + 1]
+            return Response(
+                content=partial_data,
+                status_code=206,
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{total_size}",
+                    "Content-Length": str(len(partial_data)),
+                    "Accept-Ranges": "bytes",
+                },
+            )
+
+    # Full download
     return Response(
-        content=firmware.binary_data,
+        content=binary_data,
         media_type="application/octet-stream",
         headers={
             "Content-Disposition": f'attachment; filename="{firmware.filename}"',
-            "Content-Length": str(firmware.size_bytes),
+            "Content-Length": str(total_size),
+            "Accept-Ranges": "bytes",
             "X-MD5": firmware.md5_hash,
         },
     )
