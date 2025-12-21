@@ -34,7 +34,7 @@ All sketch variants are built on the **MeshSwarm** library, which encapsulates t
 
 ## Sample Architecture
 
-![IoT Mesh Diagram](./docs/iot-mesh-diagram.svg)
+![IoT Mesh Diagram](./iot-mesh-diagram.svg)
 
 ### Installation
 
