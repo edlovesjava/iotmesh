@@ -1,0 +1,139 @@
+<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrowhead" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+      <polygon points="0 0, 6 3, 0 6" fill="#64748b"/>
+    </marker>
+    
+    <!-- Gradient for hub -->
+    <radialGradient id="hubGradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </radialGradient>
+    
+    <!-- Gradient for sensors -->
+    <radialGradient id="sensorGradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#22c55e"/>
+      <stop offset="100%" stop-color="#16a34a"/>
+    </radialGradient>
+    
+    <!-- Gradient for actuators -->
+    <radialGradient id="actuatorGradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </radialGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="800" height="600" fill="#f8fafc"/>
+  
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" font-family="system-ui, sans-serif" font-size="22" font-weight="600" fill="#1e293b">Self-Healing IoT Mesh Network</text>
+  
+  <!-- Mesh connection lines (dashed for self-healing redundancy) -->
+  <g stroke="#94a3b8" stroke-width="2" stroke-dasharray="6,4" fill="none">
+    <!-- Hub to all nodes -->
+    <line x1="400" y1="300" x2="180" y2="180"/>
+    <line x1="400" y1="300" x2="400" y2="120"/>
+    <line x1="400" y1="300" x2="620" y2="180"/>
+    <line x1="400" y1="300" x2="180" y2="420"/>
+    <line x1="400" y1="300" x2="400" y2="480"/>
+    <line x1="400" y1="300" x2="620" y2="420"/>
+    
+    <!-- Cross-mesh connections (self-healing paths) -->
+    <line x1="180" y1="180" x2="400" y2="120"/>
+    <line x1="400" y1="120" x2="620" y2="180"/>
+    <line x1="620" y1="180" x2="620" y2="420"/>
+    <line x1="620" y1="420" x2="400" y2="480"/>
+    <line x1="400" y1="480" x2="180" y2="420"/>
+    <line x1="180" y1="420" x2="180" y2="180"/>
+    
+    <!-- Additional cross-links for redundancy -->
+    <line x1="180" y1="180" x2="620" y2="420" opacity="0.5"/>
+    <line x1="620" y1="180" x2="180" y2="420" opacity="0.5"/>
+  </g>
+  
+  <!-- Central Hub/Coordinator -->
+  <g transform="translate(400, 300)">
+    <circle r="45" fill="url(#hubGradient)" stroke="#1e40af" stroke-width="3"/>
+    <text y="5" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="white">MESH</text>
+    <text y="18" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="white">COORD</text>
+  </g>
+  
+  <!-- Sensors (green) -->
+  <!-- Motion Sensor (PIR) -->
+  <g transform="translate(180, 180)">
+    <circle r="38" fill="url(#sensorGradient)" stroke="#15803d" stroke-width="2"/>
+    <text y="-8" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20">👁️</text>
+    <text y="12" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="white">MOTION</text>
+    <text y="24" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="white">(PIR)</text>
+  </g>
+  
+  <!-- Temperature Sensor -->
+  <g transform="translate(400, 120)">
+    <circle r="38" fill="url(#sensorGradient)" stroke="#15803d" stroke-width="2"/>
+    <text y="-8" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20">🌡️</text>
+    <text y="12" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="white">TEMP</text>
+    <text y="24" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="white">(DHT22)</text>
+  </g>
+  
+  <!-- Sound Sensor -->
+  <g transform="translate(620, 180)">
+    <circle r="38" fill="url(#sensorGradient)" stroke="#15803d" stroke-width="2"/>
+    <text y="-8" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20">🎤</text>
+    <text y="12" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="white">SOUND</text>
+    <text y="24" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="white">(MIC)</text>
+  </g>
+  
+  <!-- Actuators (orange) -->
+  <!-- Lights -->
+  <g transform="translate(180, 420)">
+    <circle r="38" fill="url(#actuatorGradient)" stroke="#c2410c" stroke-width="2"/>
+    <text y="-8" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20">💡</text>
+    <text y="12" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="white">LIGHTS</text>
+    <text y="24" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="white">(Relay)</text>
+  </g>
+  
+  <!-- TV -->
+  <g transform="translate(400, 480)">
+    <circle r="38" fill="url(#actuatorGradient)" stroke="#c2410c" stroke-width="2"/>
+    <text y="-8" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20">📺</text>
+    <text y="12" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="white">TV</text>
+    <text y="24" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="white">(IR/CEC)</text>
+  </g>
+  
+  <!-- Heater -->
+  <g transform="translate(620, 420)">
+    <circle r="38" fill="url(#actuatorGradient)" stroke="#c2410c" stroke-width="2"/>
+    <text y="-8" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20">🔥</text>
+    <text y="12" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="white">HEATER</text>
+    <text y="24" text-anchor="middle" font-family="system-ui, sans-serif" font-size="9" fill="white">(Relay)</text>
+  </g>
+  
+  <!-- Legend -->
+  <g transform="translate(50, 520)">
+    <rect x="0" y="0" width="700" height="65" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1"/>
+    
+    <text x="20" y="25" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#475569">Legend:</text>
+    
+    <!-- Sensor legend -->
+    <circle cx="100" cy="22" r="10" fill="url(#sensorGradient)"/>
+    <text x="118" y="26" font-family="system-ui, sans-serif" font-size="11" fill="#475569">Sensor Node</text>
+    
+    <!-- Actuator legend -->
+    <circle cx="230" cy="22" r="10" fill="url(#actuatorGradient)"/>
+    <text x="248" y="26" font-family="system-ui, sans-serif" font-size="11" fill="#475569">Actuator Node</text>
+    
+    <!-- Coordinator legend -->
+    <circle cx="370" cy="22" r="10" fill="url(#hubGradient)"/>
+    <text x="388" y="26" font-family="system-ui, sans-serif" font-size="11" fill="#475569">Mesh Coordinator</text>
+    
+    <!-- Mesh link legend -->
+    <line x1="520" y1="22" x2="560" y2="22" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6,4"/>
+    <text x="570" y="26" font-family="system-ui, sans-serif" font-size="11" fill="#475569">Mesh Link</text>
+    
+    <!-- Self-healing note -->
+    <text x="20" y="50" font-family="system-ui, sans-serif" font-size="10" fill="#64748b" font-style="italic">
+      Self-healing: If a node fails, traffic automatically routes through alternate mesh paths
+    </text>
+  </g>
+</svg>
