@@ -1,6 +1,24 @@
 # MeshSwarm Library Optimization Specification
 
-IN PROGRESS
+**Status:** Phase 1 & 2 COMPLETE
+
+## Completed Work
+
+### Phase 1: Log Levels ✅ (Commit: 9accafc)
+- Added compile-time log level macros to MeshSwarmConfig.h
+- Levels: NONE, ERROR, WARN, INFO (default), DEBUG
+- Subsystem-specific macros: MESH_LOG, STATE_LOG, TELEM_LOG, OTA_LOG, GATEWAY_LOG
+- Documented in README.md
+- **Savings:** 4-8 KB flash when using ERROR or NONE
+
+### Phase 2: HTTP Request Consolidation ✅ (Commit: 6f55a1c)
+- Created MeshSwarmHTTP.inc with shared helpers (httpPost, httpGet, httpGetRange)
+- Refactored MeshSwarmTelemetry.inc (2 callsites)
+- Refactored MeshSwarmOTA.inc (6 callsites)
+- Reduced ~80 lines of duplicated HTTP boilerplate
+- **Savings:** 3-5 KB flash
+
+---
 
 ## Overview
 
