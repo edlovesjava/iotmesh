@@ -1,5 +1,7 @@
 # MeshSwarm Library Extraction Plan
 
+DONE
+
 Plan for extracting MeshSwarm as an independent, publicly distributable Arduino library.
 
 ## Goal

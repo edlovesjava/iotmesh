@@ -1,5 +1,7 @@
 # MeshSwarm Library Optimization Specification
 
+IN PROGRESS
+
 ## Overview
 
 This specification proposes optimizations to reduce the MeshSwarm library's memory footprint while maintaining full functionality and backward compatibility.
