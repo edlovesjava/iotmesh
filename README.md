@@ -32,6 +32,10 @@ All sketch variants are built on the **MeshSwarm** library, which encapsulates t
 - Built-in serial command interface
 - Extensible via hooks: `onLoop()`, `onSerialCommand()`, `onDisplayUpdate()`
 
+## Sample Architecture
+
+![IoT Mesh Diagram](./docs/iot-mesh-diagram.svg)
+
 ### Installation
 
 Copy the `MeshSwarm/` folder to your Arduino libraries directory:
