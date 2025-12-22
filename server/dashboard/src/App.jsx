@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import NodeGrid from './components/NodeGrid';
 import StateTable from './components/StateTable';
+import TabNavigation from './components/TabNavigation';
+import ManagerLayout from './components/manager/ManagerLayout';
+import { ToastProvider } from './components/common/Toast';
 import { fetchNodes, fetchState } from './api/mesh';
 
 const REFRESH_INTERVAL = 5000; // 5 seconds
@@ -45,7 +48,8 @@ function Header({ lastUpdate, refreshing, onRefresh }) {
   );
 }
 
-function App() {
+function AppContent() {
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [nodes, setNodes] = useState([]);
   const [state, setState] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -80,11 +84,13 @@ function App() {
     loadData();
   }, [loadData]);
 
-  // Auto-refresh
+  // Auto-refresh (only on dashboard tab)
   useEffect(() => {
+    if (activeTab !== 'dashboard') return;
+
     const interval = setInterval(() => loadData(), REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, [loadData]);
+  }, [loadData, activeTab]);
 
   const handleRefresh = () => loadData(true);
 
@@ -96,6 +102,13 @@ function App() {
         onRefresh={handleRefresh}
       />
 
+      {/* Tab Navigation */}
+      <div className="bg-gray-800">
+        <div className="max-w-7xl mx-auto">
+          <TabNavigation activeTab={activeTab} onTabChange={setActiveTab} />
+        </div>
+      </div>
+
       <main className="max-w-7xl mx-auto px-4 py-8 space-y-8">
         {error && !loading && (
           <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4 text-yellow-400">
@@ -105,25 +118,43 @@ function App() {
           </div>
         )}
 
-        <NodeGrid
-          nodes={nodes}
-          loading={loading}
-          error={null}
-        />
+        {/* Dashboard Tab */}
+        {activeTab === 'dashboard' && (
+          <>
+            <NodeGrid
+              nodes={nodes}
+              loading={loading}
+              error={null}
+            />
 
-        <StateTable
-          state={state}
-          loading={loading}
-          error={null}
-        />
+            <StateTable
+              state={state}
+              loading={loading}
+              error={null}
+            />
+          </>
+        )}
+
+        {/* Manager Tab */}
+        {activeTab === 'manager' && (
+          <ManagerLayout nodes={nodes} onRefresh={handleRefresh} />
+        )}
       </main>
 
       <footer className="border-t border-gray-800 mt-auto">
         <div className="max-w-7xl mx-auto px-4 py-4 text-center text-sm text-gray-600">
-          IoT Mesh Dashboard - Refreshes every {REFRESH_INTERVAL / 1000} seconds
+          IoT Mesh Dashboard - {activeTab === 'dashboard' ? `Refreshes every ${REFRESH_INTERVAL / 1000} seconds` : 'Manager Mode'}
         </div>
       </footer>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 }
 
