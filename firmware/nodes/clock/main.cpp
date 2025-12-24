@@ -3,7 +3,7 @@
  *
  * Round TFT display showing time, date, and mesh sensor data.
  * Watches temperature and humidity from other mesh nodes.
- * Two-button interface for screen navigation and time setting.
+ * Three-button interface for screen navigation and time setting.
  *
  * Hardware:
  *   - ESP32 (original dual-core)
@@ -15,9 +15,10 @@
  *     - SDA = GPIO23 (SPI MOSI)
  *   - Left button: GPIO32 (active LOW, internal pullup)
  *   - Right button: GPIO33 (active LOW, internal pullup)
+ *   - Mode button: GPIO4 (active LOW, internal pullup)
  *
  * Button Functions:
- *   - Both buttons pressed: Enter/exit set time mode
+ *   - Mode button: Enter set time mode / Advance field / Save
  *   - Left button (in clock/sensor mode): Previous screen
  *   - Right button (in clock/sensor mode): Next screen
  *   - Left button (in set time mode): Decrement hour/minute
@@ -69,10 +70,13 @@
 #define BTN_RIGHT 33
 #endif
 
+#ifndef BTN_MODE
+#define BTN_MODE  4
+#endif
+
 #define BTN_DEBOUNCE_MS     50
 #define BTN_LONG_PRESS_MS   500
 #define BTN_REPEAT_MS       150
-#define BTN_BOTH_TIMEOUT_MS 300
 
 // ============== DISPLAY COLORS ==============
 #define COLOR_BG        0x0000  // Black
@@ -158,21 +162,22 @@ bool screenChanged = true;
 // Set time mode variables
 int setHour = 12;
 int setMinute = 0;
-unsigned long lastSetTimeBlink = 0;
-bool setTimeBlinkState = true;
 
 // Button state (volatile for ISR access)
-volatile bool btnLeftEvent = false;
-volatile bool btnRightEvent = false;
-volatile unsigned long btnLeftEventTime = 0;
-volatile unsigned long btnRightEventTime = 0;
-bool btnLeftHeld = false;
-bool btnRightHeld = false;
-unsigned long btnLeftPressTime = 0;
-unsigned long btnRightPressTime = 0;
+volatile bool btnLeftPressed = false;
+volatile bool btnRightPressed = false;
+volatile bool btnModePressed = false;
+volatile unsigned long btnLeftPressTime = 0;
+volatile unsigned long btnRightPressTime = 0;
+volatile unsigned long btnModePressTime = 0;
+
+// Button tracking for release detection and hold repeat
+bool btnLeftWasPressed = false;
+bool btnRightWasPressed = false;
+bool btnModeWasPressed = false;
+bool btnLeftActionDone = false;   // True if action was taken (via hold repeat)
+bool btnRightActionDone = false;
 unsigned long btnLastRepeat = 0;
-bool bothPressed = false;
-unsigned long bothPressedStart = 0;
 
 // Set time redraw flags
 bool redrawHour = true;
@@ -190,7 +195,6 @@ void drawClockFace();
 void drawHand(float angle, int length, uint16_t color, int width);
 void eraseHand(float angle, int length, int width);
 void updateClock();
-void drawSensorData();
 void drawDateDisplay();
 void drawDigitalHours(int hour);
 void drawDigitalMinutes(int min);
@@ -215,6 +219,7 @@ void switchScreen(ScreenMode screen);
 // Button interrupt handlers
 void IRAM_ATTR onLeftButtonPress();
 void IRAM_ATTR onRightButtonPress();
+void IRAM_ATTR onModeButtonPress();
 
 // ============== SETUP ==============
 void setup() {
@@ -226,8 +231,10 @@ void setup() {
   // Initialize buttons with internal pullup and interrupts
   pinMode(BTN_LEFT, INPUT_PULLUP);
   pinMode(BTN_RIGHT, INPUT_PULLUP);
+  pinMode(BTN_MODE, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(BTN_LEFT), onLeftButtonPress, FALLING);
   attachInterrupt(digitalPinToInterrupt(BTN_RIGHT), onRightButtonPress, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BTN_MODE), onModeButtonPress, FALLING);
 
   // Record startup time for auto set-time mode
   startupTime = millis();
@@ -257,7 +264,7 @@ void setup() {
   });
 
   // Watch for humidity updates
-  swarm.watchState("humid", [](const String& key, const String& value, const String& oldValue) {
+  swarm.watchState("humidity", [](const String& key, const String& value, const String& oldValue) {
     meshHumid = value;
     hasSensorData = true;
     Serial.printf("[CLOCK] Humidity: %s %%\n", value.c_str());
@@ -269,6 +276,16 @@ void setup() {
     if (unixTime > 1700000000) {  // Sanity check: after Nov 2023
       setMeshTime(unixTime);
       Serial.printf("[CLOCK] Time synced from mesh: %lu\n", unixTime);
+
+      // If we're in set time mode or waiting, exit to clock display
+      if (clockMode != MODE_NORMAL) {
+        clockMode = MODE_NORMAL;
+        timeValid = true;
+        screenChanged = true;
+        currentScreen = SCREEN_CLOCK;
+        Serial.println("[CLOCK] Exiting set time mode - received gateway time");
+      }
+      startupTimeoutChecked = true;  // Don't auto-enter set time mode
     }
   });
 
@@ -278,7 +295,7 @@ void setup() {
       meshTemp = value;
       hasSensorData = true;
     }
-    if (key.startsWith("humid_") && meshHumid == "--") {
+    if (key.startsWith("humidity_") && meshHumid == "--") {
       meshHumid = value;
       hasSensorData = true;
     }
@@ -428,9 +445,9 @@ void updateClock() {
         for (int i = 0; i < dots; i++) tft.print(".");
         tft.setTextSize(1);
         tft.setCursor(CENTER_X - 60, CENTER_Y + 10);
-        tft.print("or press both");
-        tft.setCursor(CENTER_X - 55, CENTER_Y + 22);
-        tft.print("buttons to set");
+        tft.print("or press MODE");
+        tft.setCursor(CENTER_X - 50, CENTER_Y + 22);
+        tft.print("button to set");
       }
     }
     return;
@@ -499,13 +516,6 @@ void updateClock() {
     drawDateDisplay();
   }
 
-  // Update sensor display - once per minute or when data first arrives
-  static bool sensorDisplayed = false;
-  if ((min != lastMin && hasSensorData) || (hasSensorData && !sensorDisplayed)) {
-    drawSensorData();
-    sensorDisplayed = hasSensorData;
-  }
-
   lastSec = sec;
   lastMin = min;
   lastHour = hour;
@@ -526,21 +536,6 @@ void drawDateDisplay() {
   tft.printf("%s %d", months[timeinfo.tm_mon], timeinfo.tm_mday);
 }
 
-void drawSensorData() {
-  // Temperature on left side (outside clock face) - "23C" format
-  tft.fillRect(2, CENTER_Y - 8, 48, 18, COLOR_BG);
-  tft.setTextSize(2);
-  tft.setTextColor(COLOR_TEMP, COLOR_BG);
-  tft.setCursor(5, CENTER_Y - 6);
-  tft.print(meshTemp + "C");
-
-  // Humidity on right side (outside clock face) - "45%" format, same size
-  tft.fillRect(SCREEN_SIZE - 50, CENTER_Y - 8, 48, 18, COLOR_BG);
-  tft.setTextSize(2);
-  tft.setTextColor(COLOR_HUMID, COLOR_BG);
-  tft.setCursor(SCREEN_SIZE - 48, CENTER_Y - 6);
-  tft.print(meshHumid + "%");
-}
 
 // ============== DIGITAL TIME FUNCTIONS ==============
 
@@ -611,17 +606,25 @@ bool getMeshTime(struct tm* timeinfo) {
 
 void IRAM_ATTR onLeftButtonPress() {
   unsigned long now = millis();
-  if (now - btnLeftEventTime > BTN_DEBOUNCE_MS) {
-    btnLeftEvent = true;
-    btnLeftEventTime = now;
+  if (now - btnLeftPressTime > BTN_DEBOUNCE_MS) {
+    btnLeftPressed = true;
+    btnLeftPressTime = now;
   }
 }
 
 void IRAM_ATTR onRightButtonPress() {
   unsigned long now = millis();
-  if (now - btnRightEventTime > BTN_DEBOUNCE_MS) {
-    btnRightEvent = true;
-    btnRightEventTime = now;
+  if (now - btnRightPressTime > BTN_DEBOUNCE_MS) {
+    btnRightPressed = true;
+    btnRightPressTime = now;
+  }
+}
+
+void IRAM_ATTR onModeButtonPress() {
+  unsigned long now = millis();
+  if (now - btnModePressTime > BTN_DEBOUNCE_MS) {
+    btnModePressed = true;
+    btnModePressTime = now;
   }
 }
 
@@ -633,136 +636,120 @@ void handleButtons() {
   // Read current button states (active LOW)
   bool leftNow = !digitalRead(BTN_LEFT);
   bool rightNow = !digitalRead(BTN_RIGHT);
+  bool modeNow = !digitalRead(BTN_MODE);
 
-  // Detect both buttons pressed together
-  if (leftNow && rightNow) {
-    // Clear any pending single-button events when both are pressed
-    btnLeftEvent = false;
-    btnRightEvent = false;
-    btnLeftHeld = false;
-    btnRightHeld = false;
-
-    if (!bothPressed) {
-      bothPressed = true;
-      bothPressedStart = now;
-    } else if (now - bothPressedStart > BTN_BOTH_TIMEOUT_MS) {
-      // Both held long enough - toggle set time mode or advance field
-      bothPressed = false;
-      bothPressedStart = 0;
-
-      if (clockMode == MODE_NORMAL) {
-        enterSetTimeMode();
-      } else if (clockMode == MODE_SET_HOUR) {
-        clockMode = MODE_SET_MINUTE;
-        redrawHour = true;
-        redrawMinute = true;
-        Serial.println("[CLOCK] Now setting minutes");
-      } else if (clockMode == MODE_SET_MINUTE) {
-        exitSetTimeMode();
-      }
-      // Wait for buttons to be released before processing more events
-      while (!digitalRead(BTN_LEFT) == LOW || !digitalRead(BTN_RIGHT) == LOW) {
-        delay(10);
-      }
-      delay(100);  // Extra debounce after release
-      btnLeftEvent = false;
-      btnRightEvent = false;
-      return;
-    }
-    return;  // Don't process individual buttons while both pressed
+  // ===== MODE BUTTON - triggers on release =====
+  if (btnModePressed && !btnModeWasPressed) {
+    // Button just pressed - track it
+    btnModeWasPressed = true;
   }
-
-  // If we were in both-pressed state but one was released, reset and wait
-  if (bothPressed) {
-    bothPressed = false;
-    bothPressedStart = 0;
-    // Clear events to avoid triggering single press action
-    btnLeftEvent = false;
-    btnRightEvent = false;
-    btnLeftHeld = false;
-    btnRightHeld = false;
-    return;
-  }
-
-  // Process left button interrupt event (only if not recently in both-pressed mode)
-  if (btnLeftEvent && !rightNow) {
-    btnLeftEvent = false;
-    btnLeftPressTime = now;
-    btnLastRepeat = now;
-    btnLeftHeld = true;
+  if (btnModeWasPressed && !modeNow) {
+    // Button released - trigger action
+    btnModeWasPressed = false;
+    btnModePressed = false;
 
     if (clockMode == MODE_NORMAL) {
-      // Previous screen
-      currentScreen = (ScreenMode)((currentScreen + SCREEN_COUNT - 1) % SCREEN_COUNT);
-      screenChanged = true;
-      Serial.printf("[CLOCK] Screen: %d\n", currentScreen);
+      enterSetTimeMode();
     } else if (clockMode == MODE_SET_HOUR) {
-      setHour = (setHour + 23) % 24;  // Decrement hour
+      clockMode = MODE_SET_MINUTE;
       redrawHour = true;
-    } else if (clockMode == MODE_SET_MINUTE) {
-      setMinute = (setMinute + 59) % 60;  // Decrement minute
       redrawMinute = true;
+      Serial.println("[CLOCK] Now setting minutes");
+    } else if (clockMode == MODE_SET_MINUTE) {
+      exitSetTimeMode();
     }
-  } else if (btnLeftEvent && rightNow) {
-    // Other button is pressed, ignore this event (likely both-press attempt)
-    btnLeftEvent = false;
   }
 
-  // Process right button interrupt event (only if not recently in both-pressed mode)
-  if (btnRightEvent && !leftNow) {
-    btnRightEvent = false;
-    btnRightPressTime = now;
+  // ===== LEFT BUTTON =====
+  if (btnLeftPressed && !btnLeftWasPressed) {
+    // Button just pressed - start tracking
+    btnLeftWasPressed = true;
+    btnLeftActionDone = false;
     btnLastRepeat = now;
-    btnRightHeld = true;
-
-    if (clockMode == MODE_NORMAL) {
-      // Next screen
-      currentScreen = (ScreenMode)((currentScreen + 1) % SCREEN_COUNT);
-      screenChanged = true;
-      Serial.printf("[CLOCK] Screen: %d\n", currentScreen);
-    } else if (clockMode == MODE_SET_HOUR) {
-      setHour = (setHour + 1) % 24;  // Increment hour
-      redrawHour = true;
-    } else if (clockMode == MODE_SET_MINUTE) {
-      setMinute = (setMinute + 1) % 60;  // Increment minute
-      redrawMinute = true;
-    }
-  } else if (btnRightEvent && leftNow) {
-    // Other button is pressed, ignore this event (likely both-press attempt)
-    btnRightEvent = false;
   }
 
-  // Handle button hold for auto-repeat in set time mode (only single button)
-  if (leftNow && !rightNow && btnLeftHeld && clockMode != MODE_NORMAL) {
-    if (now - btnLeftPressTime > BTN_LONG_PRESS_MS &&
-        now - btnLastRepeat > BTN_REPEAT_MS) {
-      btnLastRepeat = now;
-      if (clockMode == MODE_SET_HOUR) {
-        setHour = (setHour + 23) % 24;
-        redrawHour = true;
-      } else if (clockMode == MODE_SET_MINUTE) {
-        setMinute = (setMinute + 59) % 60;
-        redrawMinute = true;
+  if (btnLeftWasPressed) {
+    if (leftNow) {
+      // Button still held - check for long press repeat (only in set time mode)
+      if (clockMode != MODE_NORMAL &&
+          now - btnLeftPressTime > BTN_LONG_PRESS_MS &&
+          now - btnLastRepeat > BTN_REPEAT_MS) {
+        btnLastRepeat = now;
+        btnLeftActionDone = true;
+        if (clockMode == MODE_SET_HOUR) {
+          setHour = (setHour + 23) % 24;
+          redrawHour = true;
+        } else if (clockMode == MODE_SET_MINUTE) {
+          setMinute = (setMinute + 59) % 60;
+          redrawMinute = true;
+        }
       }
+    } else {
+      // Button released
+      if (!btnLeftActionDone) {
+        // No hold-repeat happened, so trigger single press action
+        if (clockMode == MODE_NORMAL) {
+          currentScreen = (ScreenMode)((currentScreen + SCREEN_COUNT - 1) % SCREEN_COUNT);
+          screenChanged = true;
+          Serial.printf("[CLOCK] Screen: %d\n", currentScreen);
+        } else if (clockMode == MODE_SET_HOUR) {
+          setHour = (setHour + 23) % 24;
+          redrawHour = true;
+        } else if (clockMode == MODE_SET_MINUTE) {
+          setMinute = (setMinute + 59) % 60;
+          redrawMinute = true;
+        }
+      }
+      btnLeftWasPressed = false;
+      btnLeftPressed = false;
+      btnLeftActionDone = false;
     }
-  } else if (!leftNow) {
-    btnLeftHeld = false;
   }
 
-  if (rightNow && !leftNow && btnRightHeld && clockMode != MODE_NORMAL) {
-    if (now - btnRightPressTime > BTN_LONG_PRESS_MS &&
-        now - btnLastRepeat > BTN_REPEAT_MS) {
-      btnLastRepeat = now;
-      if (clockMode == MODE_SET_HOUR) {
-        setHour = (setHour + 1) % 24;
-        redrawHour = true;
-      } else if (clockMode == MODE_SET_MINUTE) {
-        setMinute = (setMinute + 1) % 60;
-        redrawMinute = true;
+  // ===== RIGHT BUTTON =====
+  if (btnRightPressed && !btnRightWasPressed) {
+    // Button just pressed - start tracking
+    btnRightWasPressed = true;
+    btnRightActionDone = false;
+    btnLastRepeat = now;
+  }
+
+  if (btnRightWasPressed) {
+    if (rightNow) {
+      // Button still held - check for long press repeat (only in set time mode)
+      if (clockMode != MODE_NORMAL &&
+          now - btnRightPressTime > BTN_LONG_PRESS_MS &&
+          now - btnLastRepeat > BTN_REPEAT_MS) {
+        btnLastRepeat = now;
+        btnRightActionDone = true;
+        if (clockMode == MODE_SET_HOUR) {
+          setHour = (setHour + 1) % 24;
+          redrawHour = true;
+        } else if (clockMode == MODE_SET_MINUTE) {
+          setMinute = (setMinute + 1) % 60;
+          redrawMinute = true;
+        }
       }
+    } else {
+      // Button released
+      if (!btnRightActionDone) {
+        // No hold-repeat happened, so trigger single press action
+        if (clockMode == MODE_NORMAL) {
+          currentScreen = (ScreenMode)((currentScreen + 1) % SCREEN_COUNT);
+          screenChanged = true;
+          Serial.printf("[CLOCK] Screen: %d\n", currentScreen);
+        } else if (clockMode == MODE_SET_HOUR) {
+          setHour = (setHour + 1) % 24;
+          redrawHour = true;
+        } else if (clockMode == MODE_SET_MINUTE) {
+          setMinute = (setMinute + 1) % 60;
+          redrawMinute = true;
+        }
+      }
+      btnRightWasPressed = false;
+      btnRightPressed = false;
+      btnRightActionDone = false;
     }
-  } else if (!rightNow) {
-    btnRightHeld = false;
   }
 }
 
@@ -842,60 +829,58 @@ void drawSetTimeScreen() {
   tft.setCursor(CENTER_X - 55, 55);
   tft.print("L/R: adjust value");
   tft.setCursor(CENTER_X - 55, 68);
-  tft.print("Both: next/save");
+  tft.print("MODE: next/save");
 }
 
 void drawSetTimeHour() {
-  // Clear hour area only
-  tft.fillRect(CENTER_X - 62, CENTER_Y - 17, 50, 35, COLOR_BG);
+  // Clear hour area including underline space
+  tft.fillRect(CENTER_X - 62, CENTER_Y - 17, 50, 40, COLOR_BG);
 
   tft.setTextSize(4);
-  if (clockMode == MODE_SET_HOUR && setTimeBlinkState) {
+  if (clockMode == MODE_SET_HOUR) {
     tft.setTextColor(COLOR_SET_TIME, COLOR_BG);
-  } else if (clockMode == MODE_SET_HOUR && !setTimeBlinkState) {
-    tft.setTextColor(COLOR_BG, COLOR_BG);  // Hide during blink off
   } else {
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
   }
   tft.setCursor(CENTER_X - 60, CENTER_Y - 15);
   tft.printf("%02d", setHour);
+
+  // Draw underline if this field is selected (accessibility for color blind)
+  if (clockMode == MODE_SET_HOUR) {
+    tft.fillRect(CENTER_X - 60, CENTER_Y + 18, 48, 3, COLOR_SET_TIME);
+  }
 }
 
 void drawSetTimeMinute() {
-  // Clear minute area only
-  tft.fillRect(CENTER_X + 6, CENTER_Y - 17, 50, 35, COLOR_BG);
+  // Clear minute area including underline space
+  tft.fillRect(CENTER_X + 6, CENTER_Y - 17, 50, 40, COLOR_BG);
 
   tft.setTextSize(4);
-  if (clockMode == MODE_SET_MINUTE && setTimeBlinkState) {
+  if (clockMode == MODE_SET_MINUTE) {
     tft.setTextColor(COLOR_SET_TIME, COLOR_BG);
-  } else if (clockMode == MODE_SET_MINUTE && !setTimeBlinkState) {
-    tft.setTextColor(COLOR_BG, COLOR_BG);  // Hide during blink off
   } else {
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
   }
   tft.setCursor(CENTER_X + 8, CENTER_Y - 15);
   tft.printf("%02d", setMinute);
+
+  // Draw underline if this field is selected (accessibility for color blind)
+  if (clockMode == MODE_SET_MINUTE) {
+    tft.fillRect(CENTER_X + 8, CENTER_Y + 18, 48, 3, COLOR_SET_TIME);
+  }
 }
 
 void updateSetTimeScreen() {
   static ClockMode lastMode = MODE_NORMAL;
 
-  // Handle blink timing - only affects the currently edited field
-  bool needBlink = false;
-  if (millis() - lastSetTimeBlink > 500) {
-    lastSetTimeBlink = millis();
-    setTimeBlinkState = !setTimeBlinkState;
-    needBlink = true;
-  }
-
   // Check if mode changed (hour -> minute)
   if (lastMode != clockMode) {
     lastMode = clockMode;
     // Redraw indicator
-    tft.fillRect(CENTER_X - 60, CENTER_Y + 30, 120, 15, COLOR_BG);
+    tft.fillRect(CENTER_X - 60, CENTER_Y + 35, 120, 15, COLOR_BG);
     tft.setTextSize(1);
     tft.setTextColor(COLOR_SET_TIME, COLOR_BG);
-    tft.setCursor(CENTER_X - 45, CENTER_Y + 32);
+    tft.setCursor(CENTER_X - 45, CENTER_Y + 37);
     if (clockMode == MODE_SET_HOUR) {
       tft.print("Setting HOUR");
     } else {
@@ -916,14 +901,14 @@ void updateSetTimeScreen() {
     colonDrawn = true;
   }
 
-  // Only redraw hour if it changed or needs blink update
-  if (redrawHour || (needBlink && clockMode == MODE_SET_HOUR)) {
+  // Only redraw hour if it changed
+  if (redrawHour) {
     redrawHour = false;
     drawSetTimeHour();
   }
 
-  // Only redraw minute if it changed or needs blink update
-  if (redrawMinute || (needBlink && clockMode == MODE_SET_MINUTE)) {
+  // Only redraw minute if it changed
+  if (redrawMinute) {
     redrawMinute = false;
     drawSetTimeMinute();
   }
@@ -954,21 +939,21 @@ void drawSensorScreen() {
   tft.setCursor(CENTER_X - 45, 15);
   tft.print("SENSORS");
 
-  // Draw background arcs
-  // Temperature arc: left side (200° to 340°, which is from bottom-left around to top)
-  drawArc(CENTER_X, CENTER_Y + 10, 90, 8, 200, 340, COLOR_ARC_BG);
+  // Draw background arcs (thermometer style bars on sides)
+  // Temperature arc: left side (200° to 340°)
+  drawArc(CENTER_X, CENTER_Y + 20, 95, 12, 200, 340, COLOR_ARC_BG);
 
-  // Humidity arc: right side (20° to 160°, which is from top around to bottom-right)
-  drawArc(CENTER_X, CENTER_Y + 10, 90, 8, 20, 160, COLOR_ARC_BG);
+  // Humidity arc: right side (160° to 20°) - draws same arc, fills opposite direction
+  drawArc(CENTER_X, CENTER_Y + 20, 95, 12, 20, 160, COLOR_ARC_BG);
 
-  // Labels
+  // Labels at bottom of arcs
   tft.setTextSize(1);
   tft.setTextColor(COLOR_TEMP, COLOR_BG);
-  tft.setCursor(20, CENTER_Y + 60);
+  tft.setCursor(15, 210);
   tft.print("TEMP");
 
   tft.setTextColor(COLOR_HUMID, COLOR_BG);
-  tft.setCursor(SCREEN_SIZE - 50, CENTER_Y + 60);
+  tft.setCursor(SCREEN_SIZE - 45, 210);
   tft.print("HUMID");
 }
 
@@ -993,23 +978,26 @@ void updateSensorScreen() {
     float tempVal = meshTemp.toFloat();
     if (meshTemp == "--") tempVal = 0;
 
-    // Map temperature (0-40°C) to arc angle (200° to 340°)
+    // Map temperature (0-40°C) to arc angle (200° up to 340°) - bottom to top
+    // At 0°C: starts at 200° (bottom-left), at 40°C: fills to 340° (top-left)
     float tempAngle = 200 + (tempVal / 40.0) * 140;
     if (tempAngle > 340) tempAngle = 340;
     if (tempAngle < 200) tempAngle = 200;
 
-    // Redraw temperature arc
-    drawArc(CENTER_X, CENTER_Y + 10, 90, 8, 200, 340, COLOR_ARC_BG);
-    drawArc(CENTER_X, CENTER_Y + 10, 90, 8, 200, tempAngle, COLOR_ARC_TEMP);
+    // Redraw temperature arc (left side) - fill from 200° up to tempAngle
+    drawArc(CENTER_X, CENTER_Y + 20, 95, 12, 200, 340, COLOR_ARC_BG);
+    drawArc(CENTER_X, CENTER_Y + 20, 95, 12, 200, tempAngle, COLOR_ARC_TEMP);
 
-    // Temperature value
-    tft.fillRect(10, CENTER_Y - 15, 60, 35, COLOR_BG);
+    // Temperature value - centered, above humidity
+    tft.fillRect(CENTER_X - 50, CENTER_Y - 25, 100, 40, COLOR_BG);
     tft.setTextSize(3);
     tft.setTextColor(COLOR_TEMP, COLOR_BG);
-    tft.setCursor(15, CENTER_Y - 10);
+    // Center the temperature value
+    int tempWidth = meshTemp.length() * 18 + 18;  // 18px per char + "C"
+    int tempX = CENTER_X - tempWidth / 2;
+    tft.setCursor(tempX, CENTER_Y - 20);
     tft.print(meshTemp);
-    tft.setTextSize(1);
-    tft.setCursor(15, CENTER_Y + 18);
+    tft.setTextSize(2);
     tft.print("C");
   }
 
@@ -1021,23 +1009,26 @@ void updateSensorScreen() {
     float humidVal = meshHumid.toFloat();
     if (meshHumid == "--") humidVal = 0;
 
-    // Map humidity (0-100%) to arc angle (20° to 160°)
-    float humidAngle = 20 + (humidVal / 100.0) * 140;
-    if (humidAngle > 160) humidAngle = 160;
+    // Map humidity (0-100%) to arc angle (160° down to 20°) - bottom to top
+    // At 0%: starts at 160° (bottom-right), at 100%: fills to 20° (top-right)
+    float humidAngle = 160 - (humidVal / 100.0) * 140;
     if (humidAngle < 20) humidAngle = 20;
+    if (humidAngle > 160) humidAngle = 160;
 
-    // Redraw humidity arc
-    drawArc(CENTER_X, CENTER_Y + 10, 90, 8, 20, 160, COLOR_ARC_BG);
-    drawArc(CENTER_X, CENTER_Y + 10, 90, 8, 20, humidAngle, COLOR_ARC_HUMID);
+    // Redraw humidity arc (right side) - fill from 160° up to humidAngle
+    drawArc(CENTER_X, CENTER_Y + 20, 95, 12, 20, 160, COLOR_ARC_BG);
+    drawArc(CENTER_X, CENTER_Y + 20, 95, 12, humidAngle, 160, COLOR_ARC_HUMID);
 
-    // Humidity value
-    tft.fillRect(SCREEN_SIZE - 70, CENTER_Y - 15, 60, 35, COLOR_BG);
+    // Humidity value - centered, below temperature
+    tft.fillRect(CENTER_X - 50, CENTER_Y + 20, 100, 40, COLOR_BG);
     tft.setTextSize(3);
     tft.setTextColor(COLOR_HUMID, COLOR_BG);
-    tft.setCursor(SCREEN_SIZE - 65, CENTER_Y - 10);
+    // Center the humidity value
+    int humidWidth = meshHumid.length() * 18 + 18;  // 18px per char + "%"
+    int humidX = CENTER_X - humidWidth / 2;
+    tft.setCursor(humidX, CENTER_Y + 25);
     tft.print(meshHumid);
-    tft.setTextSize(1);
-    tft.setCursor(SCREEN_SIZE - 65, CENTER_Y + 18);
+    tft.setTextSize(2);
     tft.print("%");
   }
 }

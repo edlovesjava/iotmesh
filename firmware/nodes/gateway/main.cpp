@@ -32,6 +32,7 @@
 #include <Arduino.h>
 #include <MeshSwarm.h>
 #include <esp_ota_ops.h>
+#include <time.h>
 
 // Include credentials (gitignored)
 #if __has_include("credentials.h")
@@ -57,8 +58,28 @@
 #define TELEMETRY_PUSH_INTERVAL 30000  // 30 seconds
 #endif
 
+// Time sync interval (milliseconds)
+#ifndef TIME_SYNC_INTERVAL
+#define TIME_SYNC_INTERVAL 60000  // 1 minute
+#endif
+
+// NTP settings
+#ifndef NTP_SERVER
+#define NTP_SERVER "pool.ntp.org"
+#endif
+
+#ifndef GMT_OFFSET_SEC
+#define GMT_OFFSET_SEC -18000  // EST = UTC-5
+#endif
+
+#ifndef DAYLIGHT_OFFSET
+#define DAYLIGHT_OFFSET 3600   // DST = +1 hour
+#endif
+
 // ============== GLOBALS ==============
 MeshSwarm swarm;
+unsigned long lastTimeSync = 0;
+bool ntpConfigured = false;
 
 void setup() {
   Serial.begin(115200);
@@ -99,7 +120,7 @@ void loop() {
   // Check for OTA updates (polls every OTA_POLL_INTERVAL)
   swarm.checkForOTAUpdates();
 
-  // Show WiFi connection status once
+  // Show WiFi connection status once and configure NTP
   static bool wifiReported = false;
   if (!wifiReported && swarm.isWiFiConnected()) {
     Serial.println();
@@ -112,5 +133,46 @@ void loop() {
     Serial.println("========================================");
     Serial.println();
     wifiReported = true;
+
+    // Configure NTP time sync - use UTC (zero offsets) so time() returns UTC
+    // Nodes will apply their own timezone offsets
+    configTime(0, 0, NTP_SERVER);
+    ntpConfigured = true;
+    Serial.printf("[GATEWAY] NTP configured: %s (publishing UTC)\n", NTP_SERVER);
+
+    // Wait briefly for NTP sync, then publish time immediately
+    delay(2000);
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 5000)) {
+      time_t utcNow;
+      time(&utcNow);
+      swarm.setState("time", String(utcNow));
+      // Show local time in serial output for convenience
+      time_t localNow = utcNow + GMT_OFFSET_SEC + DAYLIGHT_OFFSET;
+      struct tm localTime;
+      gmtime_r(&localNow, &localTime);  // Use gmtime_r since we manually applied offset
+      Serial.printf("[GATEWAY] Initial time sync: UTC %lu (local %02d:%02d:%02d)\n",
+                    utcNow, localTime.tm_hour, localTime.tm_min, localTime.tm_sec);
+      lastTimeSync = millis();
+    }
+  }
+
+  // Publish time to mesh periodically
+  if (ntpConfigured && millis() - lastTimeSync > TIME_SYNC_INTERVAL) {
+    lastTimeSync = millis();
+
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      // Publish UTC timestamp - nodes apply their own timezone offsets
+      time_t utcNow;
+      time(&utcNow);
+      swarm.setState("time", String(utcNow));
+      // Show local time in serial output for convenience
+      time_t localNow = utcNow + GMT_OFFSET_SEC + DAYLIGHT_OFFSET;
+      struct tm localTime;
+      gmtime_r(&localNow, &localTime);  // Use gmtime_r since we manually applied offset
+      Serial.printf("[GATEWAY] Time sync: UTC %lu (local %02d:%02d:%02d)\n",
+                    utcNow, localTime.tm_hour, localTime.tm_min, localTime.tm_sec);
+    }
   }
 }

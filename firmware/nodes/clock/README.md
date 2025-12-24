@@ -8,7 +8,7 @@ A mesh-connected clock with a 1.28" round TFT display (GC9A01), showing analog/d
 - **Digital time display** at bottom (HH:MM:SS)
 - **Date display** at top (Mon DD format)
 - **Temperature and humidity** from mesh DHT sensors
-- **Two-button interface** for navigation and time setting
+- **Three-button interface** for navigation and time setting
 - **Sensor screen** with arc gauges for temp/humidity
 - **Auto set-time mode** if no gateway time received
 
@@ -20,7 +20,7 @@ A mesh-connected clock with a 1.28" round TFT display (GC9A01), showing analog/d
 |-----------|-------------|
 | ESP32 | Original dual-core dev module |
 | GC9A01 TFT | 1.28" round 240x240 display |
-| 2x Momentary buttons | For navigation and settings |
+| 3x Momentary buttons | Left, Right, Mode |
 
 ### Wiring
 
@@ -36,10 +36,11 @@ A mesh-connected clock with a 1.28" round TFT display (GC9A01), showing analog/d
 | GND | GND | Ground |
 
 **Buttons (active LOW with internal pullup):**
-| Button | GPIO | Description |
-|--------|------|-------------|
+| Button | GPIO | Function |
+|--------|------|----------|
 | Left | 32 | Previous screen / Decrement |
 | Right | 33 | Next screen / Increment |
+| Mode | 4 | Enter set time / Next field / Save |
 
 Wire each button between GPIO and GND. Internal pullups are enabled.
 
@@ -58,27 +59,27 @@ Wire each button between GPIO and GND. Internal pullups are enabled.
 |--------|-------------|---------------|
 | Left button | Previous screen | Decrement hour/minute |
 | Right button | Next screen | Increment hour/minute |
-| Both buttons (hold 300ms) | Enter set time mode | Next field / Save & exit |
+| Mode button | Enter set time mode | Next field / Save & exit |
 | Hold left/right | - | Auto-repeat adjustment |
 
 ### Setting the Time
 
 1. **Enter set time mode:**
-   - Press and hold both buttons for 300ms, OR
+   - Press the Mode button, OR
    - Wait 10 seconds after power-on (auto-enters if no gateway time)
 
 2. **Set the hour:**
-   - Hour blinks in yellow
+   - Hour is highlighted in yellow with underline
    - Press left to decrement, right to increment
    - Hold button for fast scrolling
 
 3. **Set the minute:**
-   - Press both buttons to advance to minutes
-   - Minute blinks in yellow
+   - Press Mode button to advance to minutes
+   - Minute is highlighted in yellow with underline
    - Press left to decrement, right to increment
 
 4. **Save and exit:**
-   - Press both buttons to save time and return to clock
+   - Press Mode button to save time and return to clock
 
 ### Serial Commands
 
@@ -97,19 +98,18 @@ Wire each button between GPIO and GND. Internal pullups are enabled.
 - Second hand (red, thin)
 - Digital time at bottom (HH:MM:SS)
 - Date at top (Mon DD)
-- Temperature on left side (cyan)
-- Humidity on right side (green)
 
 ### Sensor Screen
 - Title "SENSORS"
-- Temperature arc gauge (left, cyan, 0-40°C)
-- Humidity arc gauge (right, green, 0-100%)
-- Large numeric values with units
+- Temperature arc gauge (left side, cyan, 200° to 340°, 0-40°C range)
+- Humidity arc gauge (right side, green, 160° to 20°, 0-100% range)
+- Centered numeric display: temperature above, humidity below
+- Large values with units (°C and %)
 
 ### Set Time Screen
 - Title "SET TIME" in yellow
-- Large blinking time display (HH:MM)
-- Current field indicator
+- Large time display (HH:MM)
+- Selected field highlighted in yellow with underline
 - Instructions for button usage
 
 ## State Machine
@@ -119,20 +119,20 @@ stateDiagram-v2
     [*] --> Waiting: Power on
 
     Waiting --> SetHour: No gateway time (10s timeout)
-    Waiting --> SetHour: Both buttons pressed
+    Waiting --> SetHour: Mode button pressed
     Waiting --> ClockScreen: Time received from mesh
 
     ClockScreen --> SensorScreen: Right button
-    ClockScreen --> SetHour: Both buttons (300ms)
+    ClockScreen --> SetHour: Mode button
 
     SensorScreen --> ClockScreen: Left button
     SensorScreen --> ClockScreen: Right button (wraps)
-    SensorScreen --> SetHour: Both buttons (300ms)
+    SensorScreen --> SetHour: Mode button
 
-    SetHour --> SetMinute: Both buttons
+    SetHour --> SetMinute: Mode button
     SetHour --> SetHour: Left/Right button (adjust)
 
-    SetMinute --> ClockScreen: Both buttons (save)
+    SetMinute --> ClockScreen: Mode button (save)
     SetMinute --> SetMinute: Left/Right button (adjust)
 
     state ClockScreen {
@@ -144,15 +144,13 @@ stateDiagram-v2
     }
 
     state SetHour {
-        [*] --> BlinkHour
-        BlinkHour --> ShowHour: 500ms
-        ShowHour --> BlinkHour: 500ms
+        [*] --> ShowHour
+        ShowHour --> ShowHour: Value changes
     }
 
     state SetMinute {
-        [*] --> BlinkMinute
-        BlinkMinute --> ShowMinute: 500ms
-        ShowMinute --> BlinkMinute: 500ms
+        [*] --> ShowMinute
+        ShowMinute --> ShowMinute: Value changes
     }
 ```
 
@@ -160,35 +158,38 @@ stateDiagram-v2
 
 ### Button Handling
 
-Buttons use hardware interrupts for responsive input:
+Three buttons use hardware interrupts for responsive input:
 
 ```cpp
-void IRAM_ATTR onLeftButtonPress() {
-  if (millis() - btnLeftEventTime > BTN_DEBOUNCE_MS) {
-    btnLeftEvent = true;
-    btnLeftEventTime = millis();
+void IRAM_ATTR onModeButtonPress() {
+  if (millis() - btnModeEventTime > BTN_DEBOUNCE_MS) {
+    btnModeEvent = true;
+    btnModeEventTime = millis();
   }
 }
 ```
 
-Both-button detection prevents accidental single-button triggers:
-- Events are cleared when both buttons detected
-- Single-button events ignored if other button is pressed
-- 300ms hold required for both-button actions
+The dedicated Mode button simplifies logic - no chording required.
 
 ### Display Updates
 
 Efficient redraw strategy to avoid flicker:
 - **Clock hands:** Only erase/redraw when angle changes
 - **Digital time:** Separate functions for hours, minutes, seconds
-- **Set time:** Only redraw the field being edited
+- **Set time:** Only redraw the field being edited, with underline indicator
 - **Sensor arcs:** Only update when value changes
+
+### Selection Indicator
+
+The selected field in set time mode uses:
+- **Yellow color** for the selected digit
+- **Underline** below the digit (accessibility for color blind users)
 
 ### Time Management
 
 Time can come from multiple sources:
 1. **Mesh state** - Gateway publishes `time` as Unix timestamp
-2. **Manual setting** - Via buttons or `settime` serial command
+2. **Manual setting** - Via Mode button or `settime` serial command
 3. **NTP** - If gateway provides WiFi (not typical for mesh nodes)
 
 Time is stored as Unix timestamp with local offset applied:
@@ -244,6 +245,7 @@ build_flags =
     -DTFT_CS=26
     -DBTN_LEFT=32
     -DBTN_RIGHT=33
+    -DBTN_MODE=4
 ```
 
 ## Dependencies
