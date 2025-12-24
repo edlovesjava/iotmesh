@@ -3,7 +3,7 @@
  *
  * Round TFT display showing time, date, and mesh sensor data.
  * Watches temperature and humidity from other mesh nodes.
- * Three-button interface for screen navigation and time setting.
+ * Three-button interface with circular menu for screen navigation.
  *
  * Hardware:
  *   - ESP32 (original dual-core)
@@ -18,11 +18,19 @@
  *   - Mode button: GPIO4 (active LOW, internal pullup)
  *
  * Button Functions:
- *   - Mode button: Enter set time mode / Advance field / Save
- *   - Left button (in clock/sensor mode): Previous screen
- *   - Right button (in clock/sensor mode): Next screen
- *   - Left button (in set time mode): Decrement hour/minute
- *   - Right button (in set time mode): Increment hour/minute
+ *   - Mode button: Open/close circular menu, confirm selections
+ *   - Left/Right buttons (menu open): Rotate selection around the ring
+ *   - Left/Right buttons (screen-specific): Varies by screen
+ *
+ * Screens:
+ *   - Clock: Analog clock with date and digital time
+ *   - Sensors: Temperature and humidity from mesh with arc gauges
+ *   - Settings: Set time (hour/minute)
+ *   - Stopwatch: Start/stop, reset
+ *   - Alarm: Toggle on/off (Left), set time (Right), visual feedback
+ *   - Light: Mesh light sensor status
+ *   - LED: Toggle mesh LED on/off
+ *   - Motion: Mesh PIR motion sensor status
  *
  * Library:
  *   - DIYables_TFT_Round (install via Arduino Library Manager)
@@ -92,6 +100,9 @@
 #define COLOR_ARC_BG    0x2104  // Dark gray for arc background
 #define COLOR_ARC_TEMP  0x07FF  // Cyan arc
 #define COLOR_ARC_HUMID 0x07E0  // Green arc
+#define COLOR_MENU_BG   0x0000  // Menu background
+#define COLOR_MENU_ICON 0x8410  // Gray for unselected icons
+#define COLOR_MENU_SEL  0xFFE0  // Yellow for selected icon
 
 // ============== DISPLAY GEOMETRY ==============
 #define SCREEN_SIZE     240
@@ -115,17 +126,42 @@
 #define DAYLIGHT_OFFSET 3600    // 1 hour daylight saving
 #endif
 
+// ============== MENU GEOMETRY ==============
+#define MENU_RADIUS     95      // Distance from center to icon center
+#define MENU_ICON_SIZE  16      // Icon size (radius for circular icons)
+#define MENU_ITEM_COUNT 8       // Number of menu items
+
 // ============== SCREEN/MODE ENUMS ==============
 enum ScreenMode {
   SCREEN_CLOCK = 0,
-  SCREEN_SENSOR = 1,
-  SCREEN_COUNT = 2
+  SCREEN_SENSOR,
+  SCREEN_SETTINGS,
+  SCREEN_STOPWATCH,
+  SCREEN_ALARM,
+  SCREEN_LIGHT,
+  SCREEN_LED,
+  SCREEN_MOTION,
+  SCREEN_COUNT
 };
 
 enum ClockMode {
   MODE_NORMAL = 0,
   MODE_SET_HOUR = 1,
-  MODE_SET_MINUTE = 2
+  MODE_SET_MINUTE = 2,
+  MODE_SET_ALARM_HOUR = 3,
+  MODE_SET_ALARM_MINUTE = 4
+};
+
+// Menu item indices (maps to screen modes)
+enum MenuItem {
+  MENU_CLOCK = 0,
+  MENU_SENSORS,
+  MENU_SETTINGS,
+  MENU_STOPWATCH,
+  MENU_ALARM,
+  MENU_LIGHT,
+  MENU_LED,
+  MENU_MOTION
 };
 
 // ============== GLOBALS ==============
@@ -159,6 +195,10 @@ ClockMode clockMode = MODE_NORMAL;
 ScreenMode lastScreen = SCREEN_CLOCK;
 bool screenChanged = true;
 
+// Menu state
+bool menuActive = false;
+int menuSelection = 0;  // 0-7 for 8 menu items
+
 // Set time mode variables
 int setHour = 12;
 int setMinute = 0;
@@ -190,6 +230,23 @@ unsigned long startupTime = 0;
 bool startupTimeoutChecked = false;
 #define STARTUP_TIMEOUT_MS 10000  // 10 seconds to wait for gateway time
 
+// Stopwatch state
+bool stopwatchRunning = false;
+unsigned long stopwatchStartTime = 0;
+unsigned long stopwatchElapsed = 0;  // Accumulated time in ms
+
+// Alarm state
+bool alarmEnabled = false;
+int alarmHour = 7;
+int alarmMinute = 0;
+bool alarmTriggered = false;
+
+// Mesh device state
+String meshLight = "--";
+String meshLed = "0";
+String meshMotion = "0";
+unsigned long lastMotionTime = 0;
+
 // ============== FORWARD DECLARATIONS ==============
 void drawClockFace();
 void drawHand(float angle, int length, uint16_t color, int width);
@@ -215,6 +272,33 @@ void drawArc(int cx, int cy, int r, int thickness, float startAngle, float endAn
 void enterSetTimeMode();
 void exitSetTimeMode();
 void switchScreen(ScreenMode screen);
+
+// Menu functions
+void drawMenu();
+void hideMenu();
+void getMenuIconPosition(int index, int* x, int* y);
+void drawMenuIcon(int index, int cx, int cy, uint16_t color);
+void drawClockIcon(int cx, int cy, uint16_t color);
+void drawThermometerIcon(int cx, int cy, uint16_t color);
+void drawGearIcon(int cx, int cy, uint16_t color);
+void drawStopwatchIcon(int cx, int cy, uint16_t color);
+void drawBellIcon(int cx, int cy, uint16_t color);
+void drawLightbulbIcon(int cx, int cy, uint16_t color);
+void drawLedIcon(int cx, int cy, uint16_t color);
+void drawMotionIcon(int cx, int cy, uint16_t color);
+
+// New screen functions
+void drawStopwatchScreen();
+void updateStopwatchScreen();
+void drawAlarmScreen();
+void updateAlarmScreen();
+void drawLightScreen();
+void updateLightScreen();
+void drawLedScreen();
+void updateLedScreen();
+void drawMotionScreen();
+void updateMotionScreen();
+void checkAlarm();
 
 // Button interrupt handlers
 void IRAM_ATTR onLeftButtonPress();
@@ -299,6 +383,35 @@ void setup() {
       meshHumid = value;
       hasSensorData = true;
     }
+    // Catch zone-specific motion keys (motion_zone1, etc.)
+    if (key.startsWith("motion_")) {
+      meshMotion = value;
+      if (value == "1") {
+        lastMotionTime = millis();
+      }
+      Serial.printf("[CLOCK] Motion (%s): %s\n", key.c_str(), value.c_str());
+    }
+  });
+
+  // Watch for light sensor updates
+  swarm.watchState("light", [](const String& key, const String& value, const String& oldValue) {
+    meshLight = value;
+    Serial.printf("[CLOCK] Light: %s\n", value.c_str());
+  });
+
+  // Watch for LED state updates
+  swarm.watchState("led", [](const String& key, const String& value, const String& oldValue) {
+    meshLed = value;
+    Serial.printf("[CLOCK] LED: %s\n", value.c_str());
+  });
+
+  // Watch for motion updates
+  swarm.watchState("motion", [](const String& key, const String& value, const String& oldValue) {
+    meshMotion = value;
+    if (value == "1") {
+      lastMotionTime = millis();
+    }
+    Serial.printf("[CLOCK] Motion: %s\n", value.c_str());
   });
 
   // Add custom serial commands
@@ -356,9 +469,20 @@ void loop() {
     enterSetTimeMode();
   }
 
-  // Handle current screen/mode
-  if (clockMode != MODE_NORMAL) {
+  // Check alarm
+  checkAlarm();
+
+  // Handle current screen/mode (skip updates if menu is open)
+  if (menuActive) {
+    // Menu is overlaid - don't update underlying screen
+    return;
+  }
+
+  if (clockMode == MODE_SET_HOUR || clockMode == MODE_SET_MINUTE) {
     updateSetTimeScreen();
+  } else if (clockMode == MODE_SET_ALARM_HOUR || clockMode == MODE_SET_ALARM_MINUTE) {
+    // Alarm set mode - update alarm screen to show edit UI
+    updateAlarmScreen();
   } else {
     switch (currentScreen) {
       case SCREEN_CLOCK:
@@ -366,6 +490,24 @@ void loop() {
         break;
       case SCREEN_SENSOR:
         updateSensorScreen();
+        break;
+      case SCREEN_STOPWATCH:
+        updateStopwatchScreen();
+        break;
+      case SCREEN_ALARM:
+        updateAlarmScreen();
+        break;
+      case SCREEN_LIGHT:
+        updateLightScreen();
+        break;
+      case SCREEN_LED:
+        updateLedScreen();
+        break;
+      case SCREEN_MOTION:
+        updateMotionScreen();
+        break;
+      case SCREEN_SETTINGS:
+        // Settings screen is handled by set time mode
         break;
     }
   }
@@ -630,6 +772,36 @@ void IRAM_ATTR onModeButtonPress() {
 
 // ============== BUTTON HANDLING ==============
 
+// Helper to get menu index for current screen
+int screenToMenuIndex(ScreenMode screen) {
+  switch (screen) {
+    case SCREEN_CLOCK:     return MENU_CLOCK;
+    case SCREEN_SENSOR:    return MENU_SENSORS;
+    case SCREEN_SETTINGS:  return MENU_SETTINGS;
+    case SCREEN_STOPWATCH: return MENU_STOPWATCH;
+    case SCREEN_ALARM:     return MENU_ALARM;
+    case SCREEN_LIGHT:     return MENU_LIGHT;
+    case SCREEN_LED:       return MENU_LED;
+    case SCREEN_MOTION:    return MENU_MOTION;
+    default:               return MENU_CLOCK;
+  }
+}
+
+// Helper to get screen for menu index
+ScreenMode menuIndexToScreen(int index) {
+  switch (index) {
+    case MENU_CLOCK:     return SCREEN_CLOCK;
+    case MENU_SENSORS:   return SCREEN_SENSOR;
+    case MENU_SETTINGS:  return SCREEN_SETTINGS;
+    case MENU_STOPWATCH: return SCREEN_STOPWATCH;
+    case MENU_ALARM:     return SCREEN_ALARM;
+    case MENU_LIGHT:     return SCREEN_LIGHT;
+    case MENU_LED:       return SCREEN_LED;
+    case MENU_MOTION:    return SCREEN_MOTION;
+    default:             return SCREEN_CLOCK;
+  }
+}
+
 void handleButtons() {
   unsigned long now = millis();
 
@@ -640,16 +812,25 @@ void handleButtons() {
 
   // ===== MODE BUTTON - triggers on release =====
   if (btnModePressed && !btnModeWasPressed) {
-    // Button just pressed - track it
     btnModeWasPressed = true;
   }
   if (btnModeWasPressed && !modeNow) {
-    // Button released - trigger action
     btnModeWasPressed = false;
     btnModePressed = false;
 
-    if (clockMode == MODE_NORMAL) {
-      enterSetTimeMode();
+    if (menuActive) {
+      // Menu is open - check if selection changed
+      ScreenMode selectedScreen = menuIndexToScreen(menuSelection);
+      if (selectedScreen == currentScreen) {
+        // Same screen selected - just close menu
+        hideMenu();
+        Serial.println("[CLOCK] Menu closed (same screen)");
+      } else {
+        // Different screen selected - switch to it
+        menuActive = false;
+        switchScreen(selectedScreen);
+        Serial.printf("[CLOCK] Switched to screen: %d\n", selectedScreen);
+      }
     } else if (clockMode == MODE_SET_HOUR) {
       clockMode = MODE_SET_MINUTE;
       redrawHour = true;
@@ -657,12 +838,25 @@ void handleButtons() {
       Serial.println("[CLOCK] Now setting minutes");
     } else if (clockMode == MODE_SET_MINUTE) {
       exitSetTimeMode();
+    } else if (clockMode == MODE_SET_ALARM_HOUR) {
+      clockMode = MODE_SET_ALARM_MINUTE;
+      Serial.println("[CLOCK] Now setting alarm minutes");
+    } else if (clockMode == MODE_SET_ALARM_MINUTE) {
+      // Exit alarm set mode - stay on alarm screen
+      clockMode = MODE_NORMAL;
+      screenChanged = true;  // Force redraw to show normal alarm UI
+      Serial.printf("[CLOCK] Alarm set to %02d:%02d\n", alarmHour, alarmMinute);
+    } else {
+      // Normal mode - open menu (works for all screens including alarm)
+      menuActive = true;
+      menuSelection = screenToMenuIndex(currentScreen);
+      drawMenu();
+      Serial.println("[CLOCK] Menu opened");
     }
   }
 
   // ===== LEFT BUTTON =====
   if (btnLeftPressed && !btnLeftWasPressed) {
-    // Button just pressed - start tracking
     btnLeftWasPressed = true;
     btnLeftActionDone = false;
     btnLastRepeat = now;
@@ -670,8 +864,10 @@ void handleButtons() {
 
   if (btnLeftWasPressed) {
     if (leftNow) {
-      // Button still held - check for long press repeat (only in set time mode)
-      if (clockMode != MODE_NORMAL &&
+      // Button still held - check for long press repeat
+      bool canRepeat = (clockMode == MODE_SET_HOUR) || (clockMode == MODE_SET_MINUTE) ||
+                       (clockMode == MODE_SET_ALARM_HOUR) || (clockMode == MODE_SET_ALARM_MINUTE);
+      if (canRepeat &&
           now - btnLeftPressTime > BTN_LONG_PRESS_MS &&
           now - btnLastRepeat > BTN_REPEAT_MS) {
         btnLastRepeat = now;
@@ -682,22 +878,48 @@ void handleButtons() {
         } else if (clockMode == MODE_SET_MINUTE) {
           setMinute = (setMinute + 59) % 60;
           redrawMinute = true;
+        } else if (clockMode == MODE_SET_ALARM_HOUR) {
+          alarmHour = (alarmHour + 23) % 24;
+        } else if (clockMode == MODE_SET_ALARM_MINUTE) {
+          alarmMinute = (alarmMinute + 59) % 60;
         }
       }
     } else {
       // Button released
       if (!btnLeftActionDone) {
-        // No hold-repeat happened, so trigger single press action
-        if (clockMode == MODE_NORMAL) {
-          currentScreen = (ScreenMode)((currentScreen + SCREEN_COUNT - 1) % SCREEN_COUNT);
-          screenChanged = true;
-          Serial.printf("[CLOCK] Screen: %d\n", currentScreen);
+        if (menuActive) {
+          // Rotate menu selection counter-clockwise
+          menuSelection = (menuSelection + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT;
+          drawMenu();
+          Serial.printf("[CLOCK] Menu selection: %d\n", menuSelection);
         } else if (clockMode == MODE_SET_HOUR) {
           setHour = (setHour + 23) % 24;
           redrawHour = true;
         } else if (clockMode == MODE_SET_MINUTE) {
           setMinute = (setMinute + 59) % 60;
           redrawMinute = true;
+        } else if (clockMode == MODE_SET_ALARM_HOUR) {
+          alarmHour = (alarmHour + 23) % 24;
+        } else if (clockMode == MODE_SET_ALARM_MINUTE) {
+          alarmMinute = (alarmMinute + 59) % 60;
+        } else if (currentScreen == SCREEN_STOPWATCH) {
+          // Start/Stop stopwatch
+          if (stopwatchRunning) {
+            stopwatchElapsed += millis() - stopwatchStartTime;
+            stopwatchRunning = false;
+          } else {
+            stopwatchStartTime = millis();
+            stopwatchRunning = true;
+          }
+        } else if (currentScreen == SCREEN_ALARM) {
+          // Toggle alarm on/off
+          alarmEnabled = !alarmEnabled;
+          Serial.printf("[CLOCK] Alarm: %s\n", alarmEnabled ? "ON" : "OFF");
+        } else if (currentScreen == SCREEN_LED) {
+          // Toggle LED via mesh
+          String newState = (meshLed == "1") ? "0" : "1";
+          swarm.setState("led", newState);
+          Serial.printf("[CLOCK] Set LED: %s\n", newState.c_str());
         }
       }
       btnLeftWasPressed = false;
@@ -708,7 +930,6 @@ void handleButtons() {
 
   // ===== RIGHT BUTTON =====
   if (btnRightPressed && !btnRightWasPressed) {
-    // Button just pressed - start tracking
     btnRightWasPressed = true;
     btnRightActionDone = false;
     btnLastRepeat = now;
@@ -716,8 +937,10 @@ void handleButtons() {
 
   if (btnRightWasPressed) {
     if (rightNow) {
-      // Button still held - check for long press repeat (only in set time mode)
-      if (clockMode != MODE_NORMAL &&
+      // Button still held - check for long press repeat
+      bool canRepeat = (clockMode == MODE_SET_HOUR) || (clockMode == MODE_SET_MINUTE) ||
+                       (clockMode == MODE_SET_ALARM_HOUR) || (clockMode == MODE_SET_ALARM_MINUTE);
+      if (canRepeat &&
           now - btnRightPressTime > BTN_LONG_PRESS_MS &&
           now - btnLastRepeat > BTN_REPEAT_MS) {
         btnLastRepeat = now;
@@ -728,22 +951,44 @@ void handleButtons() {
         } else if (clockMode == MODE_SET_MINUTE) {
           setMinute = (setMinute + 1) % 60;
           redrawMinute = true;
+        } else if (clockMode == MODE_SET_ALARM_HOUR) {
+          alarmHour = (alarmHour + 1) % 24;
+        } else if (clockMode == MODE_SET_ALARM_MINUTE) {
+          alarmMinute = (alarmMinute + 1) % 60;
         }
       }
     } else {
       // Button released
       if (!btnRightActionDone) {
-        // No hold-repeat happened, so trigger single press action
-        if (clockMode == MODE_NORMAL) {
-          currentScreen = (ScreenMode)((currentScreen + 1) % SCREEN_COUNT);
-          screenChanged = true;
-          Serial.printf("[CLOCK] Screen: %d\n", currentScreen);
+        if (menuActive) {
+          // Rotate menu selection clockwise
+          menuSelection = (menuSelection + 1) % MENU_ITEM_COUNT;
+          drawMenu();
+          Serial.printf("[CLOCK] Menu selection: %d\n", menuSelection);
         } else if (clockMode == MODE_SET_HOUR) {
           setHour = (setHour + 1) % 24;
           redrawHour = true;
         } else if (clockMode == MODE_SET_MINUTE) {
           setMinute = (setMinute + 1) % 60;
           redrawMinute = true;
+        } else if (clockMode == MODE_SET_ALARM_HOUR) {
+          alarmHour = (alarmHour + 1) % 24;
+        } else if (clockMode == MODE_SET_ALARM_MINUTE) {
+          alarmMinute = (alarmMinute + 1) % 60;
+        } else if (currentScreen == SCREEN_STOPWATCH) {
+          // Reset stopwatch (when stopped)
+          if (!stopwatchRunning) {
+            stopwatchElapsed = 0;
+          }
+        } else if (currentScreen == SCREEN_ALARM) {
+          // Enter alarm set mode
+          clockMode = MODE_SET_ALARM_HOUR;
+          Serial.println("[CLOCK] Entering alarm set mode");
+        } else if (currentScreen == SCREEN_LED) {
+          // Toggle LED via mesh
+          String newState = (meshLed == "1") ? "0" : "1";
+          swarm.setState("led", newState);
+          Serial.printf("[CLOCK] Set LED: %s\n", newState.c_str());
         }
       }
       btnRightWasPressed = false;
@@ -1049,5 +1294,569 @@ void switchScreen(ScreenMode screen) {
     case SCREEN_SENSOR:
       drawSensorScreen();
       break;
+    case SCREEN_SETTINGS:
+      enterSetTimeMode();
+      break;
+    case SCREEN_STOPWATCH:
+      drawStopwatchScreen();
+      break;
+    case SCREEN_ALARM:
+      drawAlarmScreen();
+      break;
+    case SCREEN_LIGHT:
+      drawLightScreen();
+      break;
+    case SCREEN_LED:
+      drawLedScreen();
+      break;
+    case SCREEN_MOTION:
+      drawMotionScreen();
+      break;
+  }
+}
+
+// ============== MENU SYSTEM ==============
+
+void getMenuIconPosition(int index, int* x, int* y) {
+  // 8 items, starting at top (270°), going clockwise
+  // Angles: 270, 315, 0, 45, 90, 135, 180, 225
+  float angle = (270.0 + index * 45.0) * PI / 180.0;
+  *x = CENTER_X + cos(angle) * MENU_RADIUS;
+  *y = CENTER_Y + sin(angle) * MENU_RADIUS;
+}
+
+// Draw clock icon - circle with two hands
+void drawClockIcon(int cx, int cy, uint16_t color) {
+  tft.drawCircle(cx, cy, 8, color);
+  // Hour hand (short, pointing to 10)
+  float hourAngle = (300 - 90) * PI / 180;
+  tft.drawLine(cx, cy, cx + cos(hourAngle) * 4, cy + sin(hourAngle) * 4, color);
+  // Minute hand (long, pointing to 2)
+  float minAngle = (60 - 90) * PI / 180;
+  tft.drawLine(cx, cy, cx + cos(minAngle) * 6, cy + sin(minAngle) * 6, color);
+}
+
+// Draw thermometer icon - vertical line with bulb at bottom
+void drawThermometerIcon(int cx, int cy, uint16_t color) {
+  // Tube
+  tft.drawLine(cx, cy - 7, cx, cy + 3, color);
+  tft.drawLine(cx - 1, cy - 7, cx - 1, cy + 3, color);
+  tft.drawLine(cx + 1, cy - 7, cx + 1, cy + 3, color);
+  // Bulb at bottom
+  tft.fillCircle(cx, cy + 5, 3, color);
+  // Top cap
+  tft.drawPixel(cx - 1, cy - 8, color);
+  tft.drawPixel(cx, cy - 8, color);
+  tft.drawPixel(cx + 1, cy - 8, color);
+}
+
+// Draw gear icon - circle with teeth
+void drawGearIcon(int cx, int cy, uint16_t color) {
+  tft.drawCircle(cx, cy, 4, color);
+  // Draw 6 teeth around the gear
+  for (int i = 0; i < 6; i++) {
+    float angle = i * 60 * PI / 180;
+    int x1 = cx + cos(angle) * 5;
+    int y1 = cy + sin(angle) * 5;
+    int x2 = cx + cos(angle) * 8;
+    int y2 = cy + sin(angle) * 8;
+    tft.drawLine(x1, y1, x2, y2, color);
+  }
+}
+
+// Draw stopwatch icon - circle with button on top and single hand
+void drawStopwatchIcon(int cx, int cy, uint16_t color) {
+  tft.drawCircle(cx, cy + 1, 7, color);
+  // Button on top
+  tft.fillRect(cx - 1, cy - 9, 3, 3, color);
+  // Single hand pointing up
+  tft.drawLine(cx, cy + 1, cx, cy - 4, color);
+}
+
+// Draw bell icon - bell shape
+void drawBellIcon(int cx, int cy, uint16_t color) {
+  // Bell dome (arc)
+  tft.drawCircle(cx, cy - 2, 6, color);
+  tft.fillRect(cx - 6, cy - 2, 12, 6, COLOR_BG);  // Cut bottom half
+  // Bell body
+  tft.drawLine(cx - 6, cy + 2, cx - 4, cy - 4, color);
+  tft.drawLine(cx + 6, cy + 2, cx + 4, cy - 4, color);
+  tft.drawLine(cx - 6, cy + 2, cx + 6, cy + 2, color);
+  // Clapper
+  tft.fillCircle(cx, cy + 5, 2, color);
+}
+
+// Draw lightbulb icon - bulb outline with rays
+void drawLightbulbIcon(int cx, int cy, uint16_t color) {
+  // Bulb shape
+  tft.drawCircle(cx, cy - 2, 5, color);
+  // Base
+  tft.drawLine(cx - 3, cy + 3, cx - 3, cy + 6, color);
+  tft.drawLine(cx + 3, cy + 3, cx + 3, cy + 6, color);
+  tft.drawLine(cx - 3, cy + 6, cx + 3, cy + 6, color);
+  // Rays
+  tft.drawLine(cx - 8, cy - 2, cx - 6, cy - 2, color);
+  tft.drawLine(cx + 6, cy - 2, cx + 8, cy - 2, color);
+  tft.drawLine(cx, cy - 9, cx, cy - 7, color);
+}
+
+// Draw LED icon - small circle with radiating lines
+void drawLedIcon(int cx, int cy, uint16_t color) {
+  tft.fillCircle(cx, cy, 4, color);
+  // Radiating lines
+  for (int i = 0; i < 8; i++) {
+    float angle = i * 45 * PI / 180;
+    int x1 = cx + cos(angle) * 5;
+    int y1 = cy + sin(angle) * 5;
+    int x2 = cx + cos(angle) * 8;
+    int y2 = cy + sin(angle) * 8;
+    tft.drawLine(x1, y1, x2, y2, color);
+  }
+}
+
+// Draw motion icon - 3 curved lines (wifi-style waves)
+void drawMotionIcon(int cx, int cy, uint16_t color) {
+  // Three arcs representing motion waves
+  for (int r = 3; r <= 7; r += 2) {
+    // Draw arc from -45 to 45 degrees (facing right)
+    for (float a = -45; a <= 45; a += 10) {
+      float rad = a * PI / 180;
+      int x = cx + cos(rad) * r;
+      int y = cy + sin(rad) * r;
+      tft.drawPixel(x, y, color);
+    }
+  }
+  // Motion source dot
+  tft.fillCircle(cx - 4, cy, 2, color);
+}
+
+// Draw a specific menu icon at position
+void drawMenuIcon(int index, int cx, int cy, uint16_t color) {
+  switch (index) {
+    case MENU_CLOCK:      drawClockIcon(cx, cy, color); break;
+    case MENU_SENSORS:    drawThermometerIcon(cx, cy, color); break;
+    case MENU_SETTINGS:   drawGearIcon(cx, cy, color); break;
+    case MENU_STOPWATCH:  drawStopwatchIcon(cx, cy, color); break;
+    case MENU_ALARM:      drawBellIcon(cx, cy, color); break;
+    case MENU_LIGHT:      drawLightbulbIcon(cx, cy, color); break;
+    case MENU_LED:        drawLedIcon(cx, cy, color); break;
+    case MENU_MOTION:     drawMotionIcon(cx, cy, color); break;
+  }
+}
+
+void drawMenu() {
+  // Clear the outer ring area where menu icons will be drawn
+  // This clears date (top), digital time (bottom), and arc gauges (sides)
+  // Clear top area (date)
+  tft.fillRect(0, 0, SCREEN_SIZE, 35, COLOR_BG);
+  // Clear bottom area (digital time)
+  tft.fillRect(0, 190, SCREEN_SIZE, 50, COLOR_BG);
+  // Clear left arc area
+  tft.fillRect(0, 35, 30, 155, COLOR_BG);
+  // Clear right arc area
+  tft.fillRect(210, 35, 30, 155, COLOR_BG);
+
+  // Draw all 8 menu icons around the ring
+  for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+    int x, y;
+    getMenuIconPosition(i, &x, &y);
+
+    // Determine color based on selection
+    uint16_t color;
+    if (i == menuSelection) {
+      // Selected item - draw highlight arc behind it
+      float startAngle = 270.0 + i * 45.0 - 20.0;
+      float endAngle = 270.0 + i * 45.0 + 20.0;
+      drawArc(CENTER_X, CENTER_Y, MENU_RADIUS + 12, 6, startAngle, endAngle, COLOR_MENU_SEL);
+      color = COLOR_MENU_SEL;
+    } else {
+      color = COLOR_MENU_ICON;
+    }
+
+    drawMenuIcon(i, x, y, color);
+  }
+}
+
+void hideMenu() {
+  // Redraw current screen to clear menu overlay
+  menuActive = false;
+  screenChanged = true;
+}
+
+// ============== STOPWATCH SCREEN ==============
+
+void drawStopwatchScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(CENTER_X - 50, 20);
+  tft.print("STOPWATCH");
+
+  // Instructions
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TICK, COLOR_BG);
+  tft.setCursor(CENTER_X - 55, 200);
+  tft.print("L:Start/Stop R:Reset");
+}
+
+void updateStopwatchScreen() {
+  static unsigned long lastDisplay = 0;
+
+  if (screenChanged) {
+    screenChanged = false;
+    drawStopwatchScreen();
+    lastDisplay = 0;
+  }
+
+  // Calculate current elapsed time
+  unsigned long elapsed = stopwatchElapsed;
+  if (stopwatchRunning) {
+    elapsed += millis() - stopwatchStartTime;
+  }
+
+  // Only update display every 100ms to avoid flicker
+  if (millis() - lastDisplay < 100) return;
+  lastDisplay = millis();
+
+  // Format time: MM:SS.d
+  int totalSecs = elapsed / 1000;
+  int mins = totalSecs / 60;
+  int secs = totalSecs % 60;
+  int tenths = (elapsed % 1000) / 100;
+
+  // Clear and draw time
+  tft.fillRect(CENTER_X - 70, CENTER_Y - 20, 140, 50, COLOR_BG);
+  tft.setTextSize(4);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(CENTER_X - 65, CENTER_Y - 15);
+  tft.printf("%02d:%02d", mins, secs);
+
+  // Tenths in smaller text
+  tft.setTextSize(3);
+  tft.setCursor(CENTER_X + 50, CENTER_Y - 10);
+  tft.printf(".%d", tenths);
+
+  // Running indicator
+  tft.setTextSize(1);
+  tft.fillRect(CENTER_X - 25, CENTER_Y + 40, 50, 15, COLOR_BG);
+  tft.setCursor(CENTER_X - 20, CENTER_Y + 45);
+  if (stopwatchRunning) {
+    tft.setTextColor(COLOR_HUMID, COLOR_BG);  // Green for running
+    tft.print("RUNNING");
+  } else if (elapsed > 0) {
+    tft.setTextColor(COLOR_SET_TIME, COLOR_BG);  // Yellow for paused
+    tft.print("PAUSED");
+  }
+}
+
+// ============== ALARM SCREEN ==============
+
+void drawAlarmScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(CENTER_X - 35, 20);
+  tft.print("ALARM");
+
+  // Instructions - vary based on mode
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TICK, COLOR_BG);
+  if (clockMode == MODE_SET_ALARM_HOUR || clockMode == MODE_SET_ALARM_MINUTE) {
+    tft.setCursor(CENTER_X - 55, 200);
+    tft.print("L/R: Adjust  MODE:Next");
+  } else {
+    tft.setCursor(CENTER_X - 55, 200);
+    tft.print("L:On/Off  R:Set Time");
+  }
+}
+
+void updateAlarmScreen() {
+  static int lastDisplayHour = -1;
+  static int lastDisplayMin = -1;
+  static bool lastEnabled = false;
+  static ClockMode lastClockMode = MODE_NORMAL;
+
+  if (screenChanged) {
+    screenChanged = false;
+    drawAlarmScreen();
+    lastDisplayHour = -1;
+    lastDisplayMin = -1;
+    lastEnabled = false;
+    lastClockMode = MODE_NORMAL;
+  }
+
+  // Redraw instructions if mode changed
+  if (clockMode != lastClockMode) {
+    lastClockMode = clockMode;
+    // Redraw instructions area
+    tft.fillRect(CENTER_X - 70, 195, 140, 25, COLOR_BG);
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TICK, COLOR_BG);
+    if (clockMode == MODE_SET_ALARM_HOUR || clockMode == MODE_SET_ALARM_MINUTE) {
+      tft.setCursor(CENTER_X - 55, 200);
+      tft.print("L/R: Adjust  MODE:Next");
+    } else {
+      tft.setCursor(CENTER_X - 55, 200);
+      tft.print("L:On/Off  R:Set Time");
+    }
+    // Force redraw of time display
+    lastDisplayHour = -1;
+    lastDisplayMin = -1;
+  }
+
+  // Only redraw if changed
+  if (alarmHour != lastDisplayHour || alarmMinute != lastDisplayMin || alarmEnabled != lastEnabled) {
+    lastDisplayHour = alarmHour;
+    lastDisplayMin = alarmMinute;
+    lastEnabled = alarmEnabled;
+
+    // Clear time area
+    tft.fillRect(CENTER_X - 65, CENTER_Y - 25, 130, 60, COLOR_BG);
+
+    // Draw hour
+    tft.setTextSize(4);
+    if (clockMode == MODE_SET_ALARM_HOUR) {
+      tft.setTextColor(COLOR_SET_TIME, COLOR_BG);  // Yellow when editing
+    } else if (alarmEnabled) {
+      tft.setTextColor(COLOR_HUMID, COLOR_BG);  // Green when enabled
+    } else {
+      tft.setTextColor(COLOR_TICK, COLOR_BG);  // Gray when disabled
+    }
+    tft.setCursor(CENTER_X - 55, CENTER_Y - 20);
+    tft.printf("%02d", alarmHour);
+
+    // Draw colon
+    if (alarmEnabled) {
+      tft.setTextColor(COLOR_HUMID, COLOR_BG);
+    } else {
+      tft.setTextColor(COLOR_TICK, COLOR_BG);
+    }
+    tft.setCursor(CENTER_X - 7, CENTER_Y - 20);
+    tft.print(":");
+
+    // Draw minute
+    if (clockMode == MODE_SET_ALARM_MINUTE) {
+      tft.setTextColor(COLOR_SET_TIME, COLOR_BG);  // Yellow when editing
+    } else if (alarmEnabled) {
+      tft.setTextColor(COLOR_HUMID, COLOR_BG);  // Green when enabled
+    } else {
+      tft.setTextColor(COLOR_TICK, COLOR_BG);  // Gray when disabled
+    }
+    tft.setCursor(CENTER_X + 10, CENTER_Y - 20);
+    tft.printf("%02d", alarmMinute);
+
+    // Draw underlines when in set mode
+    if (clockMode == MODE_SET_ALARM_HOUR) {
+      tft.fillRect(CENTER_X - 55, CENTER_Y + 15, 48, 3, COLOR_SET_TIME);
+    } else if (clockMode == MODE_SET_ALARM_MINUTE) {
+      tft.fillRect(CENTER_X + 10, CENTER_Y + 15, 48, 3, COLOR_SET_TIME);
+    }
+
+    // Status indicator (only in normal mode)
+    tft.fillRect(CENTER_X - 40, CENTER_Y + 40, 80, 25, COLOR_BG);
+    if (clockMode == MODE_SET_ALARM_HOUR) {
+      tft.setTextSize(1);
+      tft.setTextColor(COLOR_SET_TIME, COLOR_BG);
+      tft.setCursor(CENTER_X - 38, CENTER_Y + 47);
+      tft.print("Setting HOUR");
+    } else if (clockMode == MODE_SET_ALARM_MINUTE) {
+      tft.setTextSize(1);
+      tft.setTextColor(COLOR_SET_TIME, COLOR_BG);
+      tft.setCursor(CENTER_X - 38, CENTER_Y + 47);
+      tft.print("Setting MINUTE");
+    } else {
+      tft.setTextSize(2);
+      tft.setCursor(CENTER_X - 15, CENTER_Y + 45);
+      if (alarmEnabled) {
+        tft.setTextColor(COLOR_HUMID, COLOR_BG);
+        tft.print("ON");
+      } else {
+        tft.setTextColor(COLOR_TICK, COLOR_BG);
+        tft.print("OFF");
+      }
+    }
+  }
+}
+
+void checkAlarm() {
+  if (!alarmEnabled || alarmTriggered) return;
+
+  struct tm timeinfo;
+  if (getMeshTime(&timeinfo) || getLocalTime(&timeinfo)) {
+    if (timeinfo.tm_hour == alarmHour && timeinfo.tm_min == alarmMinute) {
+      alarmTriggered = true;
+      Serial.println("[CLOCK] ALARM!");
+      // Could add buzzer or visual alert here
+    }
+  }
+
+  // Reset trigger flag when time moves past alarm time
+  if (alarmTriggered) {
+    struct tm timeinfo;
+    if (getMeshTime(&timeinfo) || getLocalTime(&timeinfo)) {
+      if (timeinfo.tm_hour != alarmHour || timeinfo.tm_min != alarmMinute) {
+        alarmTriggered = false;
+      }
+    }
+  }
+}
+
+// ============== LIGHT SCREEN ==============
+
+void drawLightScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(CENTER_X - 35, 20);
+  tft.print("LIGHT");
+
+  // Icon
+  drawLightbulbIcon(CENTER_X, CENTER_Y - 40, COLOR_SET_TIME);
+}
+
+void updateLightScreen() {
+  static String lastLight = "";
+
+  if (screenChanged) {
+    screenChanged = false;
+    drawLightScreen();
+    lastLight = "";
+  }
+
+  if (meshLight != lastLight) {
+    lastLight = meshLight;
+
+    // Clear and draw value
+    tft.fillRect(CENTER_X - 50, CENTER_Y, 100, 40, COLOR_BG);
+    tft.setTextSize(3);
+    tft.setTextColor(COLOR_SET_TIME, COLOR_BG);
+    tft.setCursor(CENTER_X - 40, CENTER_Y + 10);
+    tft.print(meshLight);
+
+    // Label
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TICK, COLOR_BG);
+    tft.setCursor(CENTER_X - 30, CENTER_Y + 50);
+    if (meshLight == "--") {
+      tft.print("No sensor");
+    } else {
+      tft.print("Lux");
+    }
+  }
+}
+
+// ============== LED SCREEN ==============
+
+void drawLedScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(CENTER_X - 20, 20);
+  tft.print("LED");
+
+  // Instructions
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TICK, COLOR_BG);
+  tft.setCursor(CENTER_X - 45, 200);
+  tft.print("L/R: Toggle LED");
+}
+
+void updateLedScreen() {
+  static String lastLed = "";
+
+  if (screenChanged) {
+    screenChanged = false;
+    drawLedScreen();
+    lastLed = "";
+  }
+
+  if (meshLed != lastLed) {
+    lastLed = meshLed;
+
+    // Clear center area
+    tft.fillRect(CENTER_X - 50, CENTER_Y - 40, 100, 80, COLOR_BG);
+
+    // Draw LED icon with state color
+    if (meshLed == "1") {
+      drawLedIcon(CENTER_X, CENTER_Y - 10, COLOR_SET_TIME);
+      tft.setTextSize(2);
+      tft.setTextColor(COLOR_SET_TIME, COLOR_BG);
+      tft.setCursor(CENTER_X - 15, CENTER_Y + 20);
+      tft.print("ON");
+    } else {
+      drawLedIcon(CENTER_X, CENTER_Y - 10, COLOR_TICK);
+      tft.setTextSize(2);
+      tft.setTextColor(COLOR_TICK, COLOR_BG);
+      tft.setCursor(CENTER_X - 20, CENTER_Y + 20);
+      tft.print("OFF");
+    }
+  }
+}
+
+// ============== MOTION SCREEN ==============
+
+void drawMotionScreen() {
+  tft.fillScreen(COLOR_BG);
+
+  // Title
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setCursor(CENTER_X - 40, 20);
+  tft.print("MOTION");
+}
+
+void updateMotionScreen() {
+  static String lastMotion = "";
+  static unsigned long lastUpdate = 0;
+
+  if (screenChanged) {
+    screenChanged = false;
+    drawMotionScreen();
+    lastMotion = "";
+  }
+
+  // Update every 500ms or when motion changes
+  if (meshMotion != lastMotion || millis() - lastUpdate > 500) {
+    lastMotion = meshMotion;
+    lastUpdate = millis();
+
+    // Clear center area
+    tft.fillRect(CENTER_X - 60, CENTER_Y - 40, 120, 100, COLOR_BG);
+
+    // Draw motion icon with state color
+    if (meshMotion == "1") {
+      drawMotionIcon(CENTER_X, CENTER_Y - 10, COLOR_SECOND);  // Red for motion
+      tft.setTextSize(2);
+      tft.setTextColor(COLOR_SECOND, COLOR_BG);
+      tft.setCursor(CENTER_X - 40, CENTER_Y + 20);
+      tft.print("DETECTED");
+    } else {
+      drawMotionIcon(CENTER_X, CENTER_Y - 10, COLOR_TICK);
+      tft.setTextSize(2);
+      tft.setTextColor(COLOR_TICK, COLOR_BG);
+      tft.setCursor(CENTER_X - 35, CENTER_Y + 20);
+      tft.print("No motion");
+    }
+
+    // Show time since last motion
+    if (lastMotionTime > 0) {
+      unsigned long elapsed = (millis() - lastMotionTime) / 1000;
+      tft.setTextSize(1);
+      tft.setTextColor(COLOR_TICK, COLOR_BG);
+      tft.setCursor(CENTER_X - 45, CENTER_Y + 50);
+      if (elapsed < 60) {
+        tft.printf("Last: %lus ago", elapsed);
+      } else {
+        tft.printf("Last: %lum ago", elapsed / 60);
+      }
+    }
   }
 }
