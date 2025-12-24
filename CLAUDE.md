@@ -6,21 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ESP32 mesh networking project using painlessMesh for self-organizing, self-healing networks with distributed shared state. Nodes automatically discover peers, elect coordinators, and synchronize key-value state across the network.
 
-## Repository Structure (Monorepo)
+## Repository Structure
 
 ```
-iotmesh/
-├── firmware/                    # ESP32/Arduino sketches
-│   ├── mesh_shared_state/       # Full-featured reference node
-│   ├── mesh_shared_state_button/
-│   ├── mesh_shared_state_led/
-│   ├── mesh_shared_state_watcher/
-│   ├── mesh_shared_state_pir/
-│   ├── mesh_shared_state_dht11/
-│   ├── mesh_swarm_base/
-│   ├── pir_nano/               # Arduino Nano PIR module (legacy)
-│   └── pir_nano_test/
-├── MeshSwarm/                   # Arduino library
+mesh/
+├── firmware/                    # PlatformIO project
+│   ├── nodes/                   # Node source code
+│   │   ├── button/              # Button input node
+│   │   ├── clock/               # Round TFT clock display
+│   │   ├── dht/                 # DHT11 temperature/humidity sensor
+│   │   ├── gateway/             # WiFi bridge for telemetry/OTA
+│   │   ├── led/                 # LED output node
+│   │   ├── light/               # Light sensor (LDR)
+│   │   ├── pir/                 # PIR motion sensor
+│   │   └── watcher/             # Observer node (no I/O)
+│   ├── include/                 # Shared headers
+│   ├── lib/                     # Local libraries
+│   ├── test/                    # Unit tests
+│   ├── platformio.ini           # Build configuration
+│   └── credentials.h            # WiFi credentials (gitignored)
 ├── server/                      # Telemetry server (future)
 │   ├── api/                     # FastAPI backend
 │   └── dashboard/               # React frontend
@@ -30,32 +34,59 @@ iotmesh/
 
 ## Development Environment
 
-- **IDE**: Arduino IDE
-- **ESP32 Board**: Select "ESP32 Dev Module" (Tools → Board → ESP32 Arduino)
-- **Nano Board**: Select "Arduino Nano" with ATmega328P processor
-- **Serial Baud**: 115200 for all sketches
-- **Upload Speed**: 921600 (ESP32)
+- **Toolchain**: PlatformIO (preferred)
+- **Board**: ESP32 Dev Module (esp32dev)
+- **Serial Baud**: 115200
+- **Upload Speed**: 921600
 
-### Required Libraries (Arduino Library Manager)
-- painlessMesh
-- ArduinoJson
-- Adafruit SSD1306
-- Adafruit GFX Library
-- DHT sensor library (by Adafruit) - for DHT11 node
+### PlatformIO Commands
+
+```bash
+# Build specific node
+pio run -e pir
+pio run -e clock
+pio run -e gateway
+
+# Build all default nodes
+pio run
+
+# Upload to connected device
+pio run -e pir --target upload
+
+# Monitor serial output
+pio device monitor -e pir
+
+# Build and upload
+pio run -e pir --target upload && pio device monitor -e pir
+```
+
+### Available Environments
+
+| Environment | Description |
+|-------------|-------------|
+| `pir` | PIR motion sensor node |
+| `led` | LED output node |
+| `button` | Button input node |
+| `button2` | Second button node (GPIO4) |
+| `dht` | DHT11 temperature/humidity |
+| `watcher` | Observer node (no I/O) |
+| `clock` | Round TFT clock display |
+| `light` | Light sensor (LDR) |
+| `gateway` | WiFi bridge for telemetry |
+| `pir_debug` | PIR with debug logging |
+| `pir_s3` | PIR for ESP32-S3 |
+| `gateway_s3` | Gateway for ESP32-S3 |
 
 ## Architecture
 
-### Two-Tier Hardware Design
+### ESP32 Nodes
 
-**ESP32 Nodes** (mesh_shared_state_* sketches):
-- Run painlessMesh network
-- I2C master for OLED display (0x3C) and sensor modules
-- Publish/subscribe to distributed shared state
-
-**Sensor Modules** (Arduino Nano as I2C slave):
-- Dedicated signal processing (e.g., PIR debouncing)
-- Communicate with ESP32 via I2C register interface
-- Example: pir_nano at address 0x42
+All nodes use the MeshSwarm library which provides:
+- painlessMesh network management
+- Automatic coordinator election
+- Distributed shared state synchronization
+- Optional OLED display (SSD1306)
+- Optional telemetry and OTA updates
 
 ### Shared State System
 
@@ -73,7 +104,7 @@ struct StateEntry {
 
 **State Watchers**: Register callbacks to react to state changes:
 ```cpp
-watchState("led", [](const String& key, const String& value, const String& oldValue) {
+swarm.watchState("led", [](const String& key, const String& value, const String& oldValue) {
   digitalWrite(LED_PIN, value == "1" ? HIGH : LOW);
 });
 ```
@@ -88,115 +119,105 @@ JSON messages over painlessMesh with type field:
 - `MSG_COMMAND` (5): Custom commands
 - `MSG_TELEMETRY` (6): Node telemetry to gateway
 
-## Sketch Variants
+## Node Types
 
-Located in `firmware/`, the mesh_shared_state_* sketches share ~90% code with different hardware configs:
-- `mesh_shared_state`: Full features (button + LED)
-- `mesh_shared_state_button`: Button input only
-- `mesh_shared_state_led`: LED output only
-- `mesh_shared_state_watcher`: Observer, no I/O
-- `mesh_shared_state_pir`: PIR motion sensor (direct GPIO4)
-- `mesh_shared_state_dht11`: DHT11 temperature/humidity sensor (GPIO4)
-- `mesh_gateway`: Telemetry gateway (bridges mesh to server via WiFi)
+### Sensor Nodes
+- **pir**: PIR motion sensor on GPIO4 (AM312 or HC-SR501)
+- **dht**: DHT11 temperature/humidity on GPIO4
+- **light**: LDR light sensor (analog)
+- **button**: Button input on GPIO0
 
-Enable/disable features via defines:
-```cpp
-#define ENABLE_BUTTON
-// #define ENABLE_LED
-```
+### Actuator Nodes
+- **led**: LED output on GPIO2
 
-## I2C Bus Configuration
+### Display Nodes
+- **clock**: 1.28" round TFT (GC9A01) with analog clock, sensor gauges
+- **watcher**: OLED display showing all mesh state
 
-ESP32 I2C pins: GPIO21 (SDA), GPIO22 (SCL)
-
-Devices on bus:
-- 0x3C: SSD1306 OLED display
-
-Use `scan` serial command to enumerate I2C devices.
-
-## PIR Module I2C Protocol (Legacy)
-
-> **Note**: The main `mesh_shared_state_pir` sketch now reads PIR directly from GPIO4.
-> This I2C protocol is only used by the legacy `pir_nano` sketch.
-
-Nano acts as I2C slave at 0x42 with register interface:
-- 0x00 STATUS: Bit0=motion, Bit1=ready
-- 0x01 MOTION_COUNT: Events since last read (auto-clears)
-- 0x02 LAST_MOTION: Seconds since motion (0-255)
-- 0x03 CONFIG: Bit0=enable, Bit1=auto-clear
-- 0x04 HOLD_TIME: Motion hold seconds
-- 0x05 VERSION: Firmware version
-
-## Serial Commands (ESP32 nodes)
-
-All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `scan`, `reboot`
-
-Telemetry-enabled nodes add: `telem`, `push`
-
-PIR node adds: `pir`
-
-DHT11 node adds: `dht`
+### Infrastructure Nodes
+- **gateway**: WiFi bridge for telemetry server and OTA distribution
 
 ## Hardware Connections
 
-### ESP32 Standard
+### ESP32 Standard (most nodes)
 - OLED SDA: GPIO21
 - OLED SCL: GPIO22
 - Button: GPIO0
 - LED: GPIO2
 
-### PIR Sensor (mesh_shared_state_pir)
+### PIR Sensor
+- PIR OUT: GPIO4
+- Supports AM312 (3.3V) or HC-SR501 (5V)
 
-Supports two sensor types (select via `#define` in sketch):
+### DHT11 Sensor
+- DHT DATA: GPIO4 (with 10k pull-up)
 
-**AM312 (default)** - Mini 3.3V sensor, low power (~60μA), 5s warmup
-- VCC: 3.3V (native, no regulator needed)
-- GND: GND
-- OUT: GPIO4
-
-**HC-SR501** - Standard adjustable sensor, 30s warmup
-- VCC: 5V (has onboard regulator)
-- GND: GND
-- OUT: GPIO4
-
-### DHT11 Sensor (mesh_shared_state_dht11)
-- DHT DATA: GPIO4 (with 10k pull-up to VCC)
-- DHT VCC: 3.3V
-- DHT GND: GND
-
-### Nano PIR Module (Legacy)
-- PIR sensor OUT: D2 (interrupt-capable)
-- I2C SDA: A4
-- I2C SCL: A5
-- Use level shifter between 5V Nano and 3.3V ESP32
+### Clock Node (GC9A01 TFT)
+- TFT RST: GPIO27
+- TFT DC: GPIO25
+- TFT CS: GPIO26
+- TFT SCL: GPIO18 (SPI clock)
+- TFT SDA: GPIO23 (SPI MOSI)
+- Left button: GPIO32
+- Right button: GPIO33
 
 ## Code Patterns
 
-### Adding a new sensor node
-1. Copy mesh_shared_state_watcher as template
-2. Add I2C polling for sensor module
-3. Call `setState("key", "value")` to publish to mesh
-4. Other nodes receive via state watchers
+### Adding a new node type
 
-### State change propagation
+1. Create directory: `firmware/nodes/mynode/`
+2. Create `main.cpp` with MeshSwarm setup
+3. Add environment to `platformio.ini`:
+
+```ini
+[env:mynode]
+build_src_filter = +<mynode/>
+lib_deps =
+    ${env.lib_deps}
+    ; Add sensor/display libraries here
+build_flags =
+    ${env.build_flags}
+    -DNODE_TYPE=\"mynode\"
+    -DNODE_NAME=\"MyNode\"
+```
+
+### Publishing sensor data
 ```cpp
-// On sensor node:
-setState("motion", "1");  // Broadcasts to mesh
+swarm.setState("motion", "1");  // Broadcasts to all nodes
+```
 
-// On actuator node:
-watchState("motion", [](const String& key, const String& value, const String& oldValue) {
+### Reacting to state changes
+```cpp
+swarm.watchState("motion", [](const String& key, const String& value, const String& oldValue) {
   // React to motion state
 });
 ```
 
-### Telemetry Architecture
+### Using custom displays
+```cpp
+#define MESHSWARM_ENABLE_DISPLAY 0  // Disable built-in OLED
+#include <MeshSwarm.h>
+#include <YourDisplayLibrary.h>
+```
+
+## Serial Commands
+
+All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`, `sync`, `scan`, `reboot`
+
+Node-specific commands:
+- PIR: `pir`
+- DHT: `dht`
+- Clock: `clock`, `settime HH:MM`
+- Gateway: `telem`, `push`
+
+## Telemetry Architecture
 
 **Gateway Pattern**: A dedicated gateway node bridges mesh to server.
 - Only the gateway needs WiFi credentials
 - Other nodes send telemetry via mesh to the gateway
 - Gateway pushes all telemetry to the server via HTTP
 
-**Gateway node setup** (firmware/mesh_gateway):
+**Gateway node setup**:
 ```cpp
 swarm.begin("Gateway");
 swarm.connectToWiFi("SSID", "password");
@@ -207,11 +228,6 @@ swarm.enableTelemetry(true);
 
 **Regular node setup** (no WiFi needed):
 ```cpp
-swarm.begin();
+swarm.begin("NodeName");
 swarm.enableTelemetry(true);  // Sends via mesh to gateway
 ```
-
-Telemetry pushes:
-- Every 30 seconds (configurable)
-- Immediately on state change
-- Includes: uptime, heap_free, peer_count, role, firmware, and all shared state
