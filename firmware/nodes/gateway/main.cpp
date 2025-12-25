@@ -81,6 +81,9 @@ void setup() {
   // Enable OTA distribution (gateway polls server and distributes to mesh)
   swarm.enableOTADistribution(true);
 
+  // Start HTTP server for Remote Command Protocol API
+  swarm.startHTTPServer(80);
+
   Serial.println();
   Serial.println("========================================");
   Serial.println("       MESH GATEWAY NODE");
@@ -109,8 +112,16 @@ void loop() {
     Serial.printf("[GATEWAY] Server: %s\n", TELEMETRY_URL);
     Serial.println("[GATEWAY] Ready to receive telemetry from mesh");
     Serial.println("[GATEWAY] OTA distribution enabled");
+    Serial.println("[GATEWAY] HTTP API enabled on port 80");
+    Serial.println("[GATEWAY]   GET  /api/nodes  - List nodes");
+    Serial.println("[GATEWAY]   GET  /api/state  - Get state");
+    Serial.println("[GATEWAY]   POST /api/command - Send command");
     Serial.println("========================================");
     Serial.println();
+
+    // Show IP on OLED display
+    swarm.setStatusLine("IP:" + WiFi.localIP().toString());
+
     wifiReported = true;
   }
 }
