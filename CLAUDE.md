@@ -20,13 +20,16 @@ iotmesh/
 │   ├── mesh_swarm_base/
 │   ├── pir_nano/               # Arduino Nano PIR module (legacy)
 │   └── pir_nano_test/
-├── MeshSwarm/                   # Arduino library
-├── server/                      # Telemetry server (future)
+├── server/                      # Telemetry server
 │   ├── api/                     # FastAPI backend
 │   └── dashboard/               # React frontend
+├── scripts/                     # Build and deploy scripts
 ├── docs/                        # Documentation
 └── README.md
 ```
+
+**Note**: The MeshSwarm library is maintained in a separate repository:
+https://github.com/edlovesjava/MeshSwarm
 
 ## Development Environment
 
@@ -42,6 +45,7 @@ iotmesh/
 - Adafruit SSD1306
 - Adafruit GFX Library
 - DHT sensor library (by Adafruit) - for DHT11 node
+- MeshSwarm - install from https://github.com/edlovesjava/MeshSwarm
 
 ## Architecture
 
