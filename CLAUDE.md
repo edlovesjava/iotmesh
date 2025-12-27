@@ -28,9 +28,13 @@ mesh/
 ├── server/                      # Telemetry server (future)
 │   ├── api/                     # FastAPI backend
 │   └── dashboard/               # React frontend
+├── scripts/                     # Build and deploy scripts
 ├── docs/                        # Documentation
 └── README.md
 ```
+
+**Note**: The MeshSwarm library is maintained in a separate repository:
+https://github.com/edlovesjava/MeshSwarm
 
 ## Development Environment
 

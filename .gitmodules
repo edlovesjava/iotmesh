@@ -1,0 +1,3 @@
+[submodule "MeshSwarm"]
+	path = MeshSwarm
+	url = https://github.com/edlovesjava/MeshSwarm.git
