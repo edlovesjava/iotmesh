@@ -9,32 +9,49 @@ ESP32 mesh networking project using painlessMesh for self-organizing, self-heali
 ## Repository Structure
 
 ```
-mesh/
-├── firmware/                    # PlatformIO project
-│   ├── nodes/                   # Node source code
-│   │   ├── button/              # Button input node
-│   │   ├── clock/               # Round TFT clock display
-│   │   ├── dht/                 # DHT11 temperature/humidity sensor
-│   │   ├── gateway/             # WiFi bridge for telemetry/OTA
-│   │   ├── led/                 # LED output node
-│   │   ├── light/               # Light sensor (LDR)
-│   │   ├── pir/                 # PIR motion sensor
-│   │   └── watcher/             # Observer node (no I/O)
-│   ├── include/                 # Shared headers
-│   ├── lib/                     # Local libraries
-│   ├── test/                    # Unit tests
-│   ├── platformio.ini           # Build configuration
-│   └── credentials.h            # WiFi credentials (gitignored)
-├── server/                      # Telemetry server (future)
-│   ├── api/                     # FastAPI backend
-│   └── dashboard/               # React frontend
-├── scripts/                     # Build and deploy scripts
-├── docs/                        # Documentation
-└── README.md
+├── CLAUDE.md
+├── README.md
+├── MeshSwarm/               # Git submodule (symlinked for PlatformIO)
+├── firmware/                # PlatformIO project
+│   ├── nodes/               # Node source code
+│   │   ├── button/          # Button input node
+│   │   ├── clock/           # Round TFT clock display
+│   │   ├── dht/             # DHT11 temperature/humidity sensor
+│   │   ├── gateway/         # WiFi bridge for telemetry/OTA
+│   │   ├── led/             # LED output node
+│   │   ├── light/           # Light sensor (LDR)
+│   │   ├── pir/             # PIR motion sensor
+│   │   └── watcher/         # Observer node (no I/O)
+│   ├── include/             # Shared headers
+│   ├── lib/                 # Local libraries
+│   ├── platformio.ini       # Build configuration
+│   └── credentials.h        # WiFi credentials (gitignored)
+├── server/                  # Telemetry server
+│   ├── api/                 # FastAPI backend
+│   ├── dashboard/           # React frontend
+│   ├── docker-compose.yml   # Docker orchestration
+│   └── init.sql             # Database schema
+├── scripts/                 # Build and deploy scripts
+├── docs/                    # Documentation and specs
+└── prd/                     # Product requirements documents
 ```
 
-**Note**: The MeshSwarm library is maintained in a separate repository:
+## MeshSwarm Library
+
+The MeshSwarm library is included as a git submodule and maintained separately:
 https://github.com/edlovesjava/MeshSwarm
+
+### Submodule Setup
+
+```bash
+# After cloning, initialize the submodule
+git submodule update --init --recursive
+
+# Update submodule to latest
+git submodule update --remote MeshSwarm
+```
+
+The `platformio.ini` uses a symlink to the local MeshSwarm directory for development.
 
 ## Development Environment
 
@@ -165,6 +182,15 @@ JSON messages over painlessMesh with type field:
 - Left button: GPIO32
 - Right button: GPIO33
 
+### Light Sensor (LDR or BH1750)
+**LDR (Photoresistor):**
+- LDR Analog Input: GPIO34 (ADC1_CH6)
+- Wiring: LDR leg 1 -> 3.3V, LDR leg 2 -> GPIO34 + 10k resistor to GND
+
+**BH1750 (Digital I2C):**
+- Uses shared I2C bus (SDA=21, SCL=22)
+- Default address: 0x23
+
 ## Code Patterns
 
 ### Adding a new node type
@@ -211,6 +237,7 @@ All nodes support: `status`, `peers`, `state`, `set <key> <value>`, `get <key>`,
 Node-specific commands:
 - PIR: `pir`
 - DHT: `dht`
+- Light: `light`
 - Clock: `clock`, `settime HH:MM`
 - Gateway: `telem`, `push`
 
@@ -235,3 +262,78 @@ swarm.enableTelemetry(true);
 swarm.begin("NodeName");
 swarm.enableTelemetry(true);  // Sends via mesh to gateway
 ```
+
+## Server Development
+
+The telemetry server consists of a FastAPI backend, React dashboard, and TimescaleDB database.
+
+### Quick Start (Docker)
+
+```bash
+cd server
+
+# Start all services (API, Dashboard, Database)
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```
+
+**Services:**
+| Service | URL | Description |
+|---------|-----|-------------|
+| API | http://localhost:8000 | FastAPI REST server |
+| API Docs | http://localhost:8000/docs | Swagger UI |
+| Dashboard | http://localhost:3000 | React web UI |
+| Database | localhost:5432 | TimescaleDB |
+
+### Local Development
+
+**API (without Docker):**
+```bash
+cd server/api
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Dashboard (without Docker):**
+```bash
+cd server/dashboard
+npm install
+npm run dev  # Opens on http://localhost:5173
+```
+
+### Key API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/nodes` | GET | List registered nodes |
+| `/api/v1/nodes/{id}/telemetry` | POST | Submit telemetry |
+| `/api/v1/state` | GET | Get shared state |
+| `/api/v1/firmware/upload` | POST | Upload firmware |
+| `/api/v1/ota/updates` | POST | Create OTA job |
+| `/api/v1/ota/updates/pending` | GET | Gateway polls this |
+
+See [Server README](server/README.md) for full documentation.
+
+## Scripts
+
+Build and deployment scripts are in the `scripts/` directory:
+
+```bash
+# Build firmware
+./scripts/build.sh [environment]
+
+# Flash firmware to device
+./scripts/flash.sh [environment]
+
+# Run tests
+./scripts/test.sh
+```
+
+PowerShell equivalents are available for Windows (`build.ps1`, `deploy.ps1`).
