@@ -49,6 +49,295 @@ This document explores the evolution of IoT Mesh from simple sensor/actuator net
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Core Principle: Offline-First, Minimal Delegation
+
+The AIoT swarm is designed around a fundamental principle: **maximize local intelligence, minimize external dependency**.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    INTELLIGENCE HIERARCHY                                    │
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  LEVEL 4: Cloud/Large Models (AVOID)                                │   │
+│   │  - GPT-4, Claude, cloud vision APIs                                 │   │
+│   │  - Only for: Training new models, rare edge cases                   │   │
+│   │  - Goal: 0% of real-time decisions                                  │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                              ▲ Rare escalation                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  LEVEL 3: Gateway Reasoning (MINIMIZE)                              │   │
+│   │  - Runs on Gateway ESP32 or Raspberry Pi                            │   │
+│   │  - Cross-room fusion, pattern learning, anomaly detection           │   │
+│   │  - Goal: <10% of decisions                                          │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                              ▲ Complex fusion                               │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  LEVEL 2: Room-Level Fusion (PREFERRED)                             │   │
+│   │  - Coordinator node in each room                                    │   │
+│   │  - Combines observations from room sensors                          │   │
+│   │  - Goal: ~30% of decisions                                          │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                              ▲ Semantic events                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  LEVEL 1: Edge Node AI (MAXIMIZE)                                   │   │
+│   │  - On-device TFLite Micro inference                                 │   │
+│   │  - Wake word, person detection, sound classification                │   │
+│   │  - Goal: >60% of decisions made here                                │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   DESIGN GOAL: Push intelligence DOWN the stack, not up                     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Offline-First?
+
+| Benefit | Description |
+|---------|-------------|
+| **Reliability** | Works during internet outage, router failure, cloud downtime |
+| **Latency** | Local inference: 10-100ms. Cloud round-trip: 500-2000ms |
+| **Privacy** | Audio/video never leaves the home network |
+| **Cost** | No API fees, no subscriptions, no vendor lock-in |
+| **Autonomy** | Self-sufficient swarm, no external dependencies |
+| **Security** | Reduced attack surface, no cloud credentials to leak |
+
+### Minimal Delegation Strategy
+
+```cpp
+// Decision tree for where to process
+if (canDecideOnDevice()) {
+    // LEVEL 1: Edge node handles it
+    // Example: Wake word detected → respond immediately
+    executeLocally();
+}
+else if (needsRoomContext()) {
+    // LEVEL 2: Room coordinator fuses observations
+    // Example: "Is this a real intruder or the cat?"
+    publishToRoomCoordinator();
+}
+else if (needsHomeContext()) {
+    // LEVEL 3: Gateway reasoning
+    // Example: "Which room is the person moving to?"
+    delegateToGateway();
+}
+else if (excedsLocalCapability()) {
+    // LEVEL 4: Cloud (rare, with user consent)
+    // Example: "What breed is this dog?" (novel query)
+    // ONLY if user explicitly enables cloud features
+    queueForCloudWithConsent();
+}
+```
+
+### Edge Model Capabilities (ESP32-S3)
+
+What can run locally without any delegation:
+
+| Task | Model Size | Latency | Accuracy | Delegated? |
+|------|-----------|---------|----------|------------|
+| Wake word ("Hey Home") | 20 KB | 10ms | 95%+ | Never |
+| Voice command (10 phrases) | 50 KB | 30ms | 92%+ | Never |
+| Person detection | 300 KB | 200ms | 90%+ | Never |
+| Face detection | 200 KB | 150ms | 88%+ | Never |
+| Known face recognition | 100 KB | 100ms | 85%+ | Rarely* |
+| Sound classification (10 types) | 100 KB | 50ms | 90%+ | Never |
+| Anomaly detection | 30 KB | 10ms | 85%+ | Never |
+
+*Only for enrolling new faces; recognition runs locally
+
+### Graceful Degradation
+
+When higher levels are unavailable, the swarm continues functioning:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DEGRADATION MODES                             │
+│                                                                  │
+│  Full Connectivity:                                              │
+│    All 4 levels available → Maximum intelligence                 │
+│                                                                  │
+│  Internet Down:                                                  │
+│    Levels 1-3 available → 99% functionality preserved           │
+│    - Local inference works                                       │
+│    - Room fusion works                                           │
+│    - Gateway reasoning works                                     │
+│    - Only cloud features unavailable                             │
+│                                                                  │
+│  Gateway Down:                                                   │
+│    Levels 1-2 available → 90% functionality preserved            │
+│    - Edge AI works                                               │
+│    - Room coordinators work                                      │
+│    - Cross-room tracking limited                                 │
+│    - No telemetry/logging                                        │
+│                                                                  │
+│  Single Node Isolated:                                           │
+│    Level 1 only → 60% functionality preserved                    │
+│    - Local inference works                                       │
+│    - Direct actions work (turn on light)                         │
+│    - No coordination                                             │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Anti-Patterns to Avoid
+
+| Anti-Pattern | Why It's Bad | Better Approach |
+|--------------|--------------|-----------------|
+| Cloud speech-to-text | Latency, privacy, cost | On-device wake word + commands |
+| Cloud vision API | Sends images externally | On-device person/face detection |
+| LLM for every query | Expensive, slow, overkill | Rule-based + small classifiers |
+| Real-time cloud streaming | Bandwidth, privacy | Local processing, semantic events only |
+| Cloud-dependent actions | Fails when offline | Local decision with cloud enhancement |
+
+### When Cloud IS Appropriate
+
+Cloud/large models should only be used for:
+
+1. **Training new models** - Use Edge Impulse to train, then deploy to edge
+2. **Enrolling new faces** - One-time upload with explicit consent
+3. **Novel queries** - "What is this plant?" (rare, user-initiated)
+4. **Firmware updates** - Checked periodically, not real-time dependent
+5. **Optional analytics** - Aggregated, anonymized, opt-in
+
+```cpp
+// Cloud usage must be:
+// 1. Explicit (user-initiated or consented)
+// 2. Non-blocking (swarm works without it)
+// 3. Privacy-respecting (no raw audio/video)
+// 4. Rare (not for routine decisions)
+
+if (userExplicitlyRequestedCloud() && hasUserConsent()) {
+    queueCloudRequest(semanticDataOnly);  // Never raw media
+}
+```
+
+## Robust Offline Architecture
+
+### Pre-Deployed Models
+
+All AI models are flashed to nodes at build time or deployed via OTA - never downloaded at runtime:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    MODEL DEPLOYMENT FLOW                         │
+│                                                                  │
+│   DEVELOPMENT TIME (with network)                               │
+│   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐   │
+│   │ Edge Impulse │ ──► │ Export       │ ──► │ TFLite Model │   │
+│   │ Training     │     │ Quantized    │     │ (.tflite)    │   │
+│   └──────────────┘     └──────────────┘     └──────────────┘   │
+│                                                    │             │
+│                                                    ▼             │
+│   ┌──────────────────────────────────────────────────────────┐ │
+│   │ Model embedded in firmware binary (PROGMEM/SPIFFS)       │ │
+│   └──────────────────────────────────────────────────────────┘ │
+│                              │                                   │
+│                              ▼                                   │
+│   DEPLOYMENT (via USB or OTA)                                   │
+│   ┌──────────────────────────────────────────────────────────┐ │
+│   │ Firmware + Models flashed to ESP32-S3                     │ │
+│   │ Node is now FULLY AUTONOMOUS                              │ │
+│   └──────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│   RUNTIME (no network needed)                                   │
+│   ┌──────────────────────────────────────────────────────────┐ │
+│   │ Model loaded from flash → runs inference locally          │ │
+│   │ No download, no API call, no internet required            │ │
+│   └──────────────────────────────────────────────────────────┘ │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### State Persistence
+
+Node state and learned patterns survive reboots and power cycles:
+
+```cpp
+// MeshSwarm persistent configuration (NVS)
+struct NodeConfig {
+    char nodeName[32];           // User-assigned name
+    char roomId[16];             // Room assignment
+    uint8_t faceEncodings[10][128]; // Known face embeddings
+    float normalPatterns[24];    // Hourly activity baselines
+    uint32_t modelVersion;       // Deployed model version
+};
+
+// Saved to NVS flash - survives reboot, OTA, power loss
+swarm.saveConfig(config);
+
+// On boot - no network needed to restore state
+swarm.loadConfig(&config);
+```
+
+### Self-Healing Mesh
+
+The painlessMesh network automatically recovers from disruptions:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    MESH SELF-HEALING                             │
+│                                                                  │
+│  Normal Operation:            Node Failure:                      │
+│  ┌───┐   ┌───┐   ┌───┐       ┌───┐   ┌───┐   ┌───┐            │
+│  │ A ├───┤ B ├───┤ C │       │ A ├───┤ X │───┤ C │            │
+│  └─┬─┘   └─┬─┘   └─┬─┘       └─┬─┘   └───┘   └─┬─┘            │
+│    │       │       │           │               │                │
+│  ┌─┴─┐   ┌─┴─┐   ┌─┴─┐       ┌─┴─┐   ┌───┐   ┌─┴─┐            │
+│  │ D ├───┤ E ├───┤ F │  ──►  │ D ├───┤ E ├───┤ F │            │
+│  └───┘   └───┘   └───┘       └───┘   └───┘   └───┘            │
+│                                        ▲                        │
+│                              Mesh reroutes around B             │
+│                                                                  │
+│  Automatic Recovery:                                            │
+│  • Node detection: 3-5 seconds                                  │
+│  • Route recalculation: automatic                               │
+│  • State resync: on reconnection                                │
+│  • No coordinator required for basic mesh                       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Autonomous Operation Modes
+
+Each node can operate independently when isolated:
+
+| Isolation Level | Capability | Example Actions |
+|-----------------|------------|-----------------|
+| **Full mesh** | Complete swarm intelligence | Cross-room tracking, collective reasoning |
+| **Room only** | Room-level coordination | Light follows motion in room |
+| **Single node** | Local AI + direct action | Voice command → LED on same node |
+| **Power loss** | Instant recovery on boot | Loads last config, rejoins mesh |
+
+### No Runtime Dependencies
+
+```cpp
+// WRONG - cloud dependency
+void onVoiceCommand(const char* audio) {
+    String text = cloudSpeechToText(audio);  // ❌ Fails offline
+    processCommand(text);
+}
+
+// RIGHT - fully local
+void onVoiceCommand(const int16_t* audio, size_t len) {
+    // Model runs on-device, embedded in firmware
+    int command_id = tflite_classify(audio, len);  // ✅ Always works
+    if (command_id == CMD_LIGHTS_ON) {
+        swarm.setState("lights", "1");
+    }
+}
+```
+
+### Offline Capability Matrix
+
+| Feature | Requires Internet? | Requires Mesh? | Single Node? |
+|---------|-------------------|----------------|--------------|
+| Wake word detection | No | No | ✅ Yes |
+| Voice commands | No | No | ✅ Yes |
+| Person detection | No | No | ✅ Yes |
+| Room-level fusion | No | Local mesh | No |
+| Cross-room tracking | No | Full mesh | No |
+| OTA updates | Periodic check | No | N/A |
+| Telemetry logging | Optional | Gateway | No |
+
 ## From IoT to AIoT
 
 ### Current State: Simple Sensing
