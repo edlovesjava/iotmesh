@@ -337,3 +337,27 @@ Build and deployment scripts are in the `scripts/` directory:
 ```
 
 PowerShell equivalents are available for Windows (`build.ps1`, `deploy.ps1`).
+
+## Claude Code Skills
+
+Custom commands available for Claude Code:
+
+### /add-node
+
+Creates a new MeshSwarm node type with all required files and configuration.
+
+```bash
+/add-node relay
+```
+
+The skill will:
+1. Ask for node details (type, name, hardware, GPIO pins, libraries)
+2. Create `firmware/nodes/{type}/main.cpp` with MeshSwarm boilerplate
+3. Add environment to `platformio.ini`
+4. Update documentation in `CLAUDE.md`
+
+Supports node categories:
+- **Sensor**: Periodic polling, publishes state (e.g., PIR, DHT, Light)
+- **Actuator**: Watches state, controls output (e.g., LED, Relay, Servo)
+- **Display**: Custom display with navigation (e.g., Clock, Remote)
+- **Infrastructure**: Network services (e.g., Gateway)
