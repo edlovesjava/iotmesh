@@ -37,6 +37,10 @@
 #define DEBOUNCE_MS        50
 #endif
 
+// ============== DISPLAY SLEEP CONFIG ==============
+// Note: Use a local name to avoid conflict with library default
+#define BUTTON_DISPLAY_SLEEP_MS  15000  // Sleep after 15 seconds of inactivity
+
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 
@@ -48,6 +52,9 @@ unsigned long buttonPressCount = 0;
 
 // ============== BUTTON HANDLING ==============
 void toggleLed(const char* source) {
+  // Wake display on any button press (handled by DisplayPowerManager)
+  swarm.getPowerManager().resetActivity();
+
   String currentLed = swarm.getState("led", "0");
   String newLed = (currentLed == "1") ? "0" : "1";
   swarm.setState("led", newLed);
@@ -96,6 +103,13 @@ void setup() {
   pinMode(EXT_BUTTON_PIN, INPUT_PULLUP);
   Serial.printf("[HW] Boot button on GPIO%d\n", BOOT_BUTTON_PIN);
   Serial.printf("[HW] External button on GPIO%d\n", EXT_BUTTON_PIN);
+
+  // Enable display sleep with timeout
+  swarm.enableDisplaySleep(BUTTON_DISPLAY_SLEEP_MS);
+
+  // Add both buttons as wake sources
+  swarm.addDisplayWakeButton(BOOT_BUTTON_PIN);
+  swarm.addDisplayWakeButton(EXT_BUTTON_PIN);
 
   // Register button polling in loop
   swarm.onLoop(handleButtons);
