@@ -17,7 +17,6 @@ Files here should describe:
 - **Plans**: Implementation plans and migration guides
 - **Roadmaps**: Project timelines and priorities
 - **Vision**: Long-term goals and architectural direction
-- **Comparisons**: Technology evaluations and trade-off analyses
 
 ## What Does NOT Belong Here
 
