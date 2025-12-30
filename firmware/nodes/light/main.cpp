@@ -41,6 +41,10 @@
 #define LIGHT_SENSOR_LDR        // Default to LDR
 #endif
 
+// ============== DISPLAY SLEEP CONFIG ==============
+#define LIGHT_DISPLAY_SLEEP_MS  30000  // Sleep after 30 seconds of inactivity
+#define BOOT_BUTTON_PIN  0
+
 // ============== LDR CONFIGURATION ==============
 #ifdef LIGHT_SENSOR_LDR
 
@@ -244,6 +248,10 @@ void setup() {
   swarm.begin(NODE_NAME);
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive(NODE_TYPE);
+
+  // Enable display sleep with boot button wake
+  swarm.enableDisplaySleep(LIGHT_DISPLAY_SLEEP_MS);
+  swarm.addDisplayWakeButton(BOOT_BUTTON_PIN);
 
 #ifdef LIGHT_SENSOR_LDR
   // Configure ADC

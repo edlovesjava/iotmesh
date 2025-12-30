@@ -24,6 +24,10 @@
 #define NODE_TYPE "led"
 #endif
 
+// ============== DISPLAY SLEEP CONFIG ==============
+#define LED_DISPLAY_SLEEP_MS  30000  // Sleep after 30 seconds of inactivity
+#define BOOT_BUTTON_PIN  0
+
 // ============== LED CONFIGURATION ==============
 #ifndef LED_STATE_PIN
 #define LED_STATE_PIN   2         // LED for shared state (led=1)
@@ -51,6 +55,10 @@ void setup() {
   swarm.begin(NODE_NAME);
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive(NODE_TYPE);
+
+  // Enable display sleep with boot button wake
+  swarm.enableDisplaySleep(LED_DISPLAY_SLEEP_MS);
+  swarm.addDisplayWakeButton(BOOT_BUTTON_PIN);
 
   // LED setup
   pinMode(LED_STATE_PIN, OUTPUT);
