@@ -140,7 +140,8 @@ void loop() {
     Serial.println("========================================");
     Serial.println();
 
-    // Show IP on OLED display
+    // Wake display and show IP on OLED
+    swarm.getPowerManager().wake();
     swarm.setStatusLine("IP:" + WiFi.localIP().toString());
 
     wifiReported = true;
