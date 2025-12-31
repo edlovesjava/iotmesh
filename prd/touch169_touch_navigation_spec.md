@@ -70,7 +70,15 @@ lib_deps =
 | Bottom-Left | (0,210) | 80x50 | Go to Light Detail Screen |
 | Bottom-Right | (160,210) | 80x50 | Go to Motion/LED Detail Screen |
 | Center | (60,80) | 120x120 | Go to Clock Details Screen |
-| Bottom-Center | (80,260) | 80x20 | Open Navigation Menu |
+
+**Swipe Gestures:**
+
+| Gesture | From Screen | Action |
+|---------|-------------|--------|
+| Swipe Down | Clock | Open Navigation Menu |
+| Swipe Up | Navigation Menu | Close menu, return to Clock |
+
+*Swipe detection: minimum 50px vertical movement, maximum 40px horizontal deviation*
 
 **Detail Screen Header Zones** (applies to all detail screens):
 
