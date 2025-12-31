@@ -751,6 +751,249 @@ protected:
 };
 ```
 
+### Mesh State Abstraction
+
+Abstract mesh capabilities similar to board hardware. This decouples UI from MeshSwarm implementation and enables testing without a live mesh.
+
+**Current Problem:**
+```cpp
+// Scattered throughout main.cpp
+swarm.watchState("temp", [](const String& key, const String& value, ...) {
+  meshTemp = value;  // Global variable
+});
+
+// In updateCorners()
+tft.print(meshTemp);  // Direct access to global
+```
+
+**MeshState Interface:**
+
+```cpp
+// Abstract interface for mesh data access
+class IMeshState {
+public:
+  virtual ~IMeshState() = default;
+
+  // Sensor values (returns "--" if no data)
+  virtual String getTemperature() const = 0;
+  virtual String getHumidity() const = 0;
+  virtual String getLightLevel() const = 0;
+  virtual bool getMotionDetected() const = 0;
+  virtual bool getLedState() const = 0;
+
+  // Node discovery
+  virtual int getNodeCount() const = 0;
+  virtual std::vector<String> getNodesOfType(const char* type) const = 0;
+
+  // State change notifications
+  virtual void onStateChange(const char* key, std::function<void(const String&)> cb) = 0;
+
+  // Actuator control
+  virtual void setLedState(bool on) = 0;
+  virtual void setState(const char* key, const String& value) = 0;
+};
+```
+
+**MeshSwarmAdapter (Production Implementation):**
+
+```cpp
+class MeshSwarmAdapter : public IMeshState {
+public:
+  MeshSwarmAdapter(MeshSwarm& swarm);
+
+  void begin();  // Register watchers
+
+  // IMeshState implementation
+  String getTemperature() const override { return _temp; }
+  String getHumidity() const override { return _humidity; }
+  String getLightLevel() const override { return _light; }
+  bool getMotionDetected() const override { return _motion == "1"; }
+  bool getLedState() const override { return _led == "1"; }
+
+  int getNodeCount() const override {
+    return _swarm.getNodeCount();
+  }
+
+  std::vector<String> getNodesOfType(const char* type) const override {
+    // Parse node list from mesh state
+    std::vector<String> nodes;
+    // ... implementation
+    return nodes;
+  }
+
+  void onStateChange(const char* key, std::function<void(const String&)> cb) override {
+    _callbacks[key] = cb;
+  }
+
+  void setLedState(bool on) override {
+    _swarm.setState("led", on ? "1" : "0");
+  }
+
+  void setState(const char* key, const String& value) override {
+    _swarm.setState(key, value);
+  }
+
+private:
+  MeshSwarm& _swarm;
+  String _temp = "--";
+  String _humidity = "--";
+  String _light = "--";
+  String _motion = "0";
+  String _led = "0";
+  std::map<String, std::function<void(const String&)>> _callbacks;
+
+  void setupWatchers();
+};
+
+void MeshSwarmAdapter::begin() {
+  _swarm.watchState("temp", [this](const String& key, const String& value, const String& old) {
+    _temp = value;
+    if (_callbacks.count("temp")) _callbacks["temp"](value);
+  });
+
+  _swarm.watchState("humid", [this](const String& key, const String& value, const String& old) {
+    _humidity = value;
+    if (_callbacks.count("humid")) _callbacks["humid"](value);
+  });
+
+  // ... other watchers
+}
+```
+
+**MockMeshState (For Testing/Simulation):**
+
+```cpp
+class MockMeshState : public IMeshState {
+public:
+  // Settable values for testing
+  void setTemperature(const String& temp) {
+    _temp = temp;
+    if (_callbacks.count("temp")) _callbacks["temp"](temp);
+  }
+
+  void setHumidity(const String& humid) {
+    _humidity = humid;
+    if (_callbacks.count("humid")) _callbacks["humid"](humid);
+  }
+
+  void simulateMotion(bool detected) {
+    _motion = detected;
+    if (_callbacks.count("motion")) _callbacks["motion"](detected ? "1" : "0");
+  }
+
+  // IMeshState implementation returns mock values
+  String getTemperature() const override { return _temp; }
+  String getHumidity() const override { return _humidity; }
+  // ...
+
+private:
+  String _temp = "72.5";
+  String _humidity = "45";
+  bool _motion = false;
+  bool _led = false;
+  std::map<String, std::function<void(const String&)>> _callbacks;
+};
+```
+
+**Widget Integration with IMeshState:**
+
+```cpp
+class SensorCornerWidget : public Widget {
+public:
+  SensorCornerWidget(int16_t x, int16_t y, const char* icon, uint16_t color);
+
+  // Bind to mesh state source
+  void bindToMeshState(IMeshState& mesh, const char* stateKey);
+
+  void update();  // Pull latest value from mesh
+  void render(TFT_eSPI& tft, bool forceRedraw) override;
+
+private:
+  IMeshState* _mesh = nullptr;
+  const char* _stateKey = nullptr;
+  String _value = "--";
+  String _lastValue;
+};
+
+void SensorCornerWidget::bindToMeshState(IMeshState& mesh, const char* stateKey) {
+  _mesh = &mesh;
+  _stateKey = stateKey;
+
+  // Register for push updates
+  mesh.onStateChange(stateKey, [this](const String& value) {
+    if (_value != value) {
+      _value = value;
+      markDirty();
+    }
+  });
+}
+
+void SensorCornerWidget::update() {
+  if (!_mesh) return;
+
+  // Pull current value (for initial load or polling fallback)
+  String newValue;
+  if (strcmp(_stateKey, "temp") == 0) newValue = _mesh->getTemperature();
+  else if (strcmp(_stateKey, "humid") == 0) newValue = _mesh->getHumidity();
+  // ...
+
+  if (_value != newValue) {
+    _value = newValue;
+    markDirty();
+  }
+}
+```
+
+**ClockScreen Using Abstraction:**
+
+```cpp
+class ClockScreen : public ScreenRenderer {
+public:
+  ClockScreen(IMeshState& mesh, Battery& battery);
+
+  void render(TFT_eSPI& tft, bool forceRedraw) override;
+
+private:
+  IMeshState& _mesh;
+  Battery& _battery;
+
+  HumidityCorner _humidity;
+  TemperatureCorner _temperature;
+  LightCorner _light;
+  MotionLedCorner _motionLed;
+  // ...
+};
+
+ClockScreen::ClockScreen(IMeshState& mesh, Battery& battery)
+  : _mesh(mesh), _battery(battery)
+{
+  // Bind widgets to mesh state
+  _humidity.bindToMeshState(mesh, "humid");
+  _temperature.bindToMeshState(mesh, "temp");
+  _light.bindToMeshState(mesh, "light");
+  _motionLed.bindToMeshState(mesh, "motion");
+}
+```
+
+**Benefits of Mesh Abstraction:**
+
+| Benefit | Description |
+|---------|-------------|
+| **Testability** | Use MockMeshState for unit tests without hardware |
+| **Simulation** | Run UI with simulated sensor values for demos |
+| **Decoupling** | Screens don't depend on MeshSwarm directly |
+| **Push Updates** | Widgets auto-update when mesh state changes |
+| **Extensibility** | Easy to add new state sources (WiFi API, BLE, etc.) |
+
+**Refactoring Phase:**
+
+Add as **Phase R9: Mesh State Abstraction** after IMU:
+1. Create `IMeshState` interface
+2. Create `MeshSwarmAdapter` implementation
+3. Create `MockMeshState` for testing
+4. Update widgets to use `bindToMeshState()`
+5. Update screens to receive `IMeshState&` instead of accessing globals
+
 ---
 
 ## Next Steps
