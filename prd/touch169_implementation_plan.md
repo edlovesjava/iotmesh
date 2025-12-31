@@ -194,6 +194,27 @@ First settings screen - establishes settings pattern with save/cancel.
 
 ---
 
+### Phase 1.8: Internal Temperature Monitoring
+
+Add QMI8658 IMU temperature sensor to monitor device heat.
+
+| Task | Description | Validation |
+|------|-------------|------------|
+| 1.8.1 | Add SensorQMI8658 to includes | Compiles |
+| 1.8.2 | Initialize QMI8658 on I2C bus (addr 0x6B) | Serial shows init success |
+| 1.8.3 | Add `readInternalTemp()` function | Returns temperature in C |
+| 1.8.4 | Add internal temp display to Debug screen | Shows "Board: XX.X C" |
+| 1.8.5 | Add thermal warning threshold (e.g., > 50C) | Warning logged to serial |
+| 1.8.6 | Optional: Add ESP32 internal temp for comparison | Shows "CPU: XX.X C" |
+
+**Phase Validation:**
+- [ ] QMI8658 initializes without I2C conflicts
+- [ ] Internal temperature reads correctly on debug screen
+- [ ] Temperature updates periodically
+- [ ] Thermal warning appears if device overheats
+
+---
+
 ### Milestone 1 Validation Checklist
 
 - [ ] Clock displays with sensor corners

@@ -887,6 +887,26 @@ The CST816T supports native gesture detection - leverage for:
 - Screen mirroring to other display nodes
 - Add Clock Details or Stopwatch to nav menu for direct access
 
+#### 11.0 On-Board Ambient Temperature Sensor
+
+The touch169 could include an on-board temperature sensor for local ambient readings:
+
+**Hardware Options:**
+- **BME280/BMP280** - Temperature, humidity, pressure (I2C, shares bus with touch/IMU)
+- **SHT30/SHT40** - High-accuracy temperature and humidity (I2C)
+- **DS18B20** - Simple 1-wire temperature sensor (requires GPIO pin)
+
+**Use Cases:**
+- Display local room temperature without requiring a separate DHT node
+- Compare on-board temp with mesh DHT sensors for calibration
+- Portable temperature monitoring when device is away from mesh
+- Battery compartment thermal monitoring (placed near battery)
+
+**Integration:**
+- Add to clock corner as "Local" temperature zone
+- Show in Debug screen alongside internal board temp
+- Use for thermal throttling decisions (reduce CPU if ambient + internal too high)
+
 #### 11.1 WiFi Mode & Connection Info Screen
 
 Enable the touch169 to operate in WiFi client mode as an alternative to mesh-only mode:
