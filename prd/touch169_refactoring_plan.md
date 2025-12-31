@@ -1238,22 +1238,27 @@ private:
 
 Since we use function pointers (not lambdas with captures), widgets use a polling approach with `update()` rather than push callbacks. This is simpler and avoids the complexity of static callback routing.
 
+**Single-Key Widget (simple sensors):**
+
 ```cpp
 class SensorCornerWidget : public Widget {
 public:
   SensorCornerWidget(int16_t x, int16_t y, const char* icon, uint16_t color);
 
-  // Bind to mesh state source
+  // Bind to mesh state source (single key)
   void bindToMeshState(IMeshState& mesh, const char* stateKey);
 
   void update();  // Pull latest value from mesh - call in render loop
   void render(TFT_eSPI& tft, bool forceRedraw) override;
 
-private:
+protected:
   IMeshState* _mesh = nullptr;
   const char* _stateKey = nullptr;
   String _value = "--";
   String _lastValue;
+
+  // Helper for subclasses to get any state value
+  String getStateValue(const char* key);
 };
 
 void SensorCornerWidget::bindToMeshState(IMeshState& mesh, const char* stateKey) {
@@ -1261,22 +1266,92 @@ void SensorCornerWidget::bindToMeshState(IMeshState& mesh, const char* stateKey)
   _stateKey = stateKey;
 }
 
+String SensorCornerWidget::getStateValue(const char* key) {
+  if (!_mesh) return "--";
+  if (strcmp(key, "temp") == 0) return _mesh->getTemperature();
+  if (strcmp(key, "humid") == 0) return _mesh->getHumidity();
+  if (strcmp(key, "light") == 0) return _mesh->getLightLevel();
+  if (strcmp(key, "motion") == 0) return _mesh->getMotionDetected() ? "1" : "0";
+  if (strcmp(key, "led") == 0) return _mesh->getLedState() ? "1" : "0";
+  return "--";
+}
+
 void SensorCornerWidget::update() {
-  if (!_mesh) return;
-
-  // Pull current value (polling approach - simple and works with function pointers)
-  String newValue;
-  if (strcmp(_stateKey, "temp") == 0) newValue = _mesh->getTemperature();
-  else if (strcmp(_stateKey, "humid") == 0) newValue = _mesh->getHumidity();
-  else if (strcmp(_stateKey, "light") == 0) newValue = _mesh->getLightLevel();
-  else if (strcmp(_stateKey, "motion") == 0) newValue = _mesh->getMotionDetected() ? "1" : "0";
-  else if (strcmp(_stateKey, "led") == 0) newValue = _mesh->getLedState() ? "1" : "0";
-
+  String newValue = getStateValue(_stateKey);
   if (_value != newValue) {
     _value = newValue;
     markDirty();
   }
 }
+```
+
+**Multi-Key Widget (widgets needing multiple state values):**
+
+Some widgets need to react to multiple state keys. For example, `MotionLedCorner` displays both motion detection status AND LED state.
+
+```cpp
+class MotionLedCorner : public SensorCornerWidget {
+public:
+  MotionLedCorner() : SensorCornerWidget(160, 210, "👁", COLOR_MOTION) {}
+
+  // Override to track multiple keys
+  void update() override {
+    // Pull both motion and led state
+    String newMotion = getStateValue("motion");
+    String newLed = getStateValue("led");
+
+    if (_motion != newMotion || _led != newLed) {
+      _motion = newMotion;
+      _led = newLed;
+      markDirty();
+    }
+  }
+
+  void render(TFT_eSPI& tft, bool forceRedraw) override {
+    if (!needsRedraw() && !forceRedraw) return;
+
+    // Render motion indicator (eye icon changes color)
+    uint16_t motionColor = (_motion == "1") ? COLOR_MOTION_ACTIVE : COLOR_MOTION;
+    // ... draw motion indicator
+
+    // Render LED state (small LED icon)
+    uint16_t ledColor = (_led == "1") ? COLOR_LED_ON : COLOR_LED_OFF;
+    // ... draw LED indicator
+
+    clearDirty();
+  }
+
+private:
+  String _motion = "0";
+  String _led = "0";
+};
+```
+
+**Alternative: Multi-Key Base Class**
+
+For widgets needing many keys, provide a multi-key variant:
+
+```cpp
+class MultiStateWidget : public Widget {
+public:
+  static const int MAX_KEYS = 4;
+
+  void bindToMeshState(IMeshState& mesh) { _mesh = &mesh; }
+
+  // Get any state value by key
+  String getState(const char* key) {
+    if (!_mesh) return "--";
+    if (strcmp(key, "temp") == 0) return _mesh->getTemperature();
+    if (strcmp(key, "humid") == 0) return _mesh->getHumidity();
+    if (strcmp(key, "light") == 0) return _mesh->getLightLevel();
+    if (strcmp(key, "motion") == 0) return _mesh->getMotionDetected() ? "1" : "0";
+    if (strcmp(key, "led") == 0) return _mesh->getLedState() ? "1" : "0";
+    return "--";
+  }
+
+protected:
+  IMeshState* _mesh = nullptr;
+};
 ```
 
 **Note:** The `onStateChange()` callback is still available for components that need push-style updates (e.g., triggering immediate redraws or sounds on motion detection). These callbacks use static functions or free functions rather than lambdas with captures.
@@ -1305,10 +1380,13 @@ ClockScreen::ClockScreen(IMeshState& mesh, Battery& battery)
   : _mesh(mesh), _battery(battery)
 {
   // Bind widgets to mesh state
+  // Single-key widgets use bindToMeshState(mesh, key)
   _humidity.bindToMeshState(mesh, "humid");
   _temperature.bindToMeshState(mesh, "temp");
   _light.bindToMeshState(mesh, "light");
-  _motionLed.bindToMeshState(mesh, "motion");
+
+  // Multi-key widgets just need the mesh reference
+  _motionLed.bindToMeshState(mesh);  // Internally uses "motion" and "led"
 }
 ```
 
