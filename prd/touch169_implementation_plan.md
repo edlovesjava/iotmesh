@@ -504,3 +504,6 @@ For development without full mesh hardware, see:
 | M4 | 4.1 - 4.2 | Polish, optimization, stability |
 
 **Estimated Scope:** ~65 tasks across 4 milestones
+<!--stackedit_data:
+eyJoaXN0b3J5IjpbMTU4ODExMDc4N119
+-->
