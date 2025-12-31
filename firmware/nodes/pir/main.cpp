@@ -36,6 +36,10 @@
 // #define PIR_SENSOR_AM312      // Mini 3.3V sensor, low power
 #define PIR_SENSOR_HC_SR501   // Standard adjustable sensor
 
+// ============== DISPLAY SLEEP CONFIG ==============
+#define PIR_DISPLAY_SLEEP_MS  30000  // Sleep after 30 seconds of inactivity
+#define BOOT_BUTTON_PIN  0
+
 // ============== PIR CONFIGURATION ==============
 #ifndef PIR_PIN
 #define PIR_PIN         4         // GPIO4 for PIR sensor output
@@ -121,6 +125,10 @@ void setup() {
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive(NODE_TYPE);
   bootTime = millis();
+
+  // Enable display sleep with boot button wake
+  swarm.enableDisplaySleep(PIR_DISPLAY_SLEEP_MS);
+  swarm.addDisplayWakeButton(BOOT_BUTTON_PIN);
 
   // PIR pin setup
   pinMode(PIR_PIN, INPUT);

@@ -76,10 +76,225 @@
 #define DAYLIGHT_OFFSET 3600   // DST = +1 hour
 #endif
 
+// ============== DISPLAY SCREEN NAVIGATION ==============
+#define BOOT_BUTTON_PIN  0
+#define EXT_BUTTON_PIN   5    // External button for screen navigation
+#define DEBOUNCE_MS      200  // Longer debounce for screen nav
+
+// Screen modes - STATE is a single screen that pages through all state entries
+enum GatewayScreen {
+  SCREEN_OVERVIEW = 0,
+  SCREEN_WIFI,
+  SCREEN_NODES,
+  SCREEN_STATE,
+  SCREEN_COUNT  // Total number of screens
+};
+
+// State display config
+#define STATE_ENTRIES_PER_PAGE 5  // Single column, 5 rows
+volatile int statePage = 0;       // Current state page
+
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 unsigned long lastTimeSync = 0;
 bool ntpConfigured = false;
+
+// Screen navigation state
+volatile GatewayScreen currentScreen = SCREEN_OVERVIEW;
+volatile unsigned long lastButtonPress = 0;
+volatile bool screenChanged = false;
+
+// State cache for display (since sharedState is private)
+std::map<String, String> stateCache;
+
+// Screen names for status line (21 chars max for OLED width)
+// Note: STATE screen name is generated dynamically with page number
+const char* screenNames[] = {
+  "--- OVERVIEW ---",
+  "---- WIFI ----",
+  "---- NODES ----",
+  "---- STATE ----"  // Placeholder, actual name set dynamically
+};
+
+// Buffer for dynamic state screen name
+char stateScreenName[22];
+
+// ============== HELPER FUNCTIONS ==============
+int getStateTotalPages() {
+  int stateCount = stateCache.size();
+  if (stateCount == 0) return 1;
+  return (stateCount + STATE_ENTRIES_PER_PAGE - 1) / STATE_ENTRIES_PER_PAGE;
+}
+
+// ============== INTERRUPT HANDLER ==============
+void IRAM_ATTR onButtonPress() {
+  unsigned long now = millis();
+  if (now - lastButtonPress > DEBOUNCE_MS) {
+    lastButtonPress = now;
+
+    // If on STATE screen, cycle through pages first
+    if (currentScreen == SCREEN_STATE) {
+      int totalPages = getStateTotalPages();
+      statePage++;
+      if (statePage >= totalPages) {
+        // Done with state pages, go to next screen
+        statePage = 0;
+        currentScreen = static_cast<GatewayScreen>((currentScreen + 1) % SCREEN_COUNT);
+      }
+    } else {
+      currentScreen = static_cast<GatewayScreen>((currentScreen + 1) % SCREEN_COUNT);
+      if (currentScreen == SCREEN_STATE) {
+        statePage = 0;  // Reset to first page when entering STATE screen
+      }
+    }
+    screenChanged = true;
+  }
+}
+
+// Update status line when screen changes
+void updateStatusLine() {
+  if (screenChanged) {
+    screenChanged = false;
+
+    if (currentScreen == SCREEN_STATE) {
+      // Generate dynamic state screen name with page info
+      int totalPages = getStateTotalPages();
+      snprintf(stateScreenName, sizeof(stateScreenName), "-- STATE %d/%d --", statePage + 1, totalPages);
+      swarm.setStatusLine(stateScreenName);
+      Serial.printf("[GATEWAY] Screen: %s\n", stateScreenName);
+    } else {
+      swarm.setStatusLine(screenNames[currentScreen]);
+      Serial.printf("[GATEWAY] Screen: %s\n", screenNames[currentScreen]);
+    }
+  }
+}
+
+// ============== RSSI TO QUALITY STRING ==============
+const char* rssiToQuality(int rssi) {
+  if (rssi >= -50) return "Excellent";
+  if (rssi >= -60) return "Good";
+  if (rssi >= -70) return "Fair";
+  return "Poor";
+}
+
+// ============== SCREEN DRAWING FUNCTIONS ==============
+// All screens get 6 lines (lines 3-8) after the 2-line header from MeshSwarm
+
+void drawOverviewScreen(Adafruit_SSD1306& disp) {
+  // Lines 4-8: Gateway status (line 3 is status line with screen name)
+  disp.printf("WiFi:%s\n", swarm.isWiFiConnected() ? "Connected" : "Disconnected");
+  disp.println("Server:OK  OTA:Ready");
+  disp.printf("IP:%s\n", WiFi.localIP().toString().c_str());
+  unsigned long uptime = millis() / 1000;
+  disp.printf("Up:%lu:%02lu:%02lu\n", uptime / 3600, (uptime / 60) % 60, uptime % 60);
+  disp.printf("Nodes:%d States:%d\n", swarm.getPeerCount() + 1, stateCache.size());
+}
+
+void drawWifiScreen(Adafruit_SSD1306& disp) {
+  // Lines 4-8: WiFi details (line 3 is status line with screen name)
+  if (swarm.isWiFiConnected()) {
+    String ssid = WiFi.SSID();
+    if (ssid.length() > 18) ssid = ssid.substring(0, 18);
+    disp.printf("SSID:%s\n", ssid.c_str());
+    disp.printf("IP:%s\n", WiFi.localIP().toString().c_str());
+    int rssi = WiFi.RSSI();
+    disp.printf("RSSI:%ddBm %s\n", rssi, rssiToQuality(rssi));
+    disp.printf("Ch:%d GW:%s\n", WiFi.channel(), WiFi.gatewayIP().toString().c_str());
+    disp.printf("MAC:%s\n", WiFi.macAddress().c_str());
+  } else {
+    disp.println("Not connected");
+  }
+}
+
+void drawNodesScreen(Adafruit_SSD1306& disp) {
+  // Lines 4-8: Node list (line 3 is status line with screen name)
+  auto& peers = swarm.getPeers();
+
+  // 2-column layout: 10 chars per column, 5 rows = 10 nodes max
+  // Prefix: * = coordinator, - = not alive, ? = unknown, (space) = alive
+  String leftCol[5];
+  String rightCol[5];
+  int idx = 0;
+
+  // Add self first (gateway is always shown)
+  String selfName = swarm.isCoordinator() ? "*Gateway" : " Gateway";
+  if (idx < 5) leftCol[idx] = selfName.substring(0, 10);
+  else if (idx < 10) rightCol[idx - 5] = selfName.substring(0, 10);
+  idx++;
+
+  // Add all known peers (not just alive ones)
+  for (auto& kv : peers) {
+    if (idx >= 10) break;
+    Peer& peer = kv.second;
+
+    // Determine prefix based on status
+    char prefix;
+    if (peer.role == "COORD") {
+      prefix = '*';  // Coordinator
+    } else if (peer.role.length() == 0) {
+      prefix = '?';  // Unknown role (never received heartbeat)
+    } else if (!peer.alive) {
+      prefix = '-';  // Not alive (missed heartbeats)
+    } else {
+      prefix = ' ';  // Known and alive
+    }
+
+    String name = String(prefix) + peer.name.substring(0, 9);
+    if (idx < 5) leftCol[idx] = name;
+    else rightCol[idx - 5] = name;
+    idx++;
+  }
+
+  // Draw 5 rows, 2 columns
+  for (int row = 0; row < 5; row++) {
+    // Pad left column to 10 chars
+    String left = leftCol[row];
+    while (left.length() < 10) left += " ";
+    String right = rightCol[row];
+    disp.printf("%s %s\n", left.c_str(), right.c_str());
+  }
+}
+
+void drawStateScreen(Adafruit_SSD1306& disp) {
+  // Lines 4-8: State entries (line 3 is status line with screen name)
+  // Single column, 5 entries per page, value always visible
+
+  if (stateCache.size() == 0) {
+    disp.println("(no state)");
+    return;
+  }
+
+  int startIdx = statePage * STATE_ENTRIES_PER_PAGE;
+  int shown = 0;
+  int entryNum = 0;
+
+  for (auto& kv : stateCache) {
+    if (entryNum >= startIdx && shown < STATE_ENTRIES_PER_PAGE) {
+      // Format: key=value, ensuring value is visible
+      // Total width: 21 chars, reserve at least 6 for value (=xxxxx)
+      String key = kv.first;
+      String val = kv.second;
+
+      // Truncate value if too long (max 10 chars)
+      if (val.length() > 10) val = val.substring(0, 10);
+
+      // Calculate max key length: 21 - 1 (=) - val.length()
+      int maxKeyLen = 20 - val.length();
+      if (maxKeyLen < 1) maxKeyLen = 1;
+      if (key.length() > maxKeyLen) key = key.substring(0, maxKeyLen);
+
+      disp.printf("%s=%s\n", key.c_str(), val.c_str());
+      shown++;
+    }
+    entryNum++;
+  }
+
+  // Fill remaining lines
+  while (shown < STATE_ENTRIES_PER_PAGE) {
+    disp.println();
+    shown++;
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -105,6 +320,43 @@ void setup() {
   // Start HTTP server for Remote Command Protocol API
   swarm.startHTTPServer(80);
 
+  // Configure buttons for screen navigation with interrupts
+  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(EXT_BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BOOT_BUTTON_PIN), onButtonPress, FALLING);
+  attachInterrupt(digitalPinToInterrupt(EXT_BUTTON_PIN), onButtonPress, FALLING);
+  Serial.printf("[GATEWAY] Boot button on GPIO%d (interrupt)\n", BOOT_BUTTON_PIN);
+  Serial.printf("[GATEWAY] External button on GPIO%d (interrupt)\n", EXT_BUTTON_PIN);
+
+  // Set initial status line
+  swarm.setStatusLine(screenNames[currentScreen]);
+
+  // Register status line update handler
+  swarm.onLoop(updateStatusLine);
+
+  // Watch all state changes to populate cache for display
+  swarm.watchState("*", [](const String& key, const String& value, const String& oldValue) {
+    stateCache[key] = value;
+  });
+
+  // Register custom display handler for multi-screen navigation
+  swarm.onDisplayUpdate([](Adafruit_SSD1306& disp, int startLine) {
+    switch (currentScreen) {
+      case SCREEN_OVERVIEW:
+        drawOverviewScreen(disp);
+        break;
+      case SCREEN_WIFI:
+        drawWifiScreen(disp);
+        break;
+      case SCREEN_NODES:
+        drawNodesScreen(disp);
+        break;
+      case SCREEN_STATE:
+        drawStateScreen(disp);
+        break;
+    }
+  });
+
   Serial.println();
   Serial.println("========================================");
   Serial.println("       MESH GATEWAY NODE");
@@ -112,6 +364,7 @@ void setup() {
   Serial.println();
   Serial.println("This node bridges mesh -> server");
   Serial.println("Other nodes send telemetry via mesh");
+  Serial.println("Press button to cycle display screens");
   Serial.println();
   Serial.println("Waiting for WiFi connection...");
   Serial.println();
@@ -140,8 +393,8 @@ void loop() {
     Serial.println("========================================");
     Serial.println();
 
-    // Show IP on OLED display
-    swarm.setStatusLine("IP:" + WiFi.localIP().toString());
+    // Wake display (status line shows current screen name)
+    swarm.getPowerManager().wake();
 
     wifiReported = true;
 

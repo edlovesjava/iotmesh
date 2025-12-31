@@ -1,0 +1,59 @@
+Waveshare ESP32-S3-Touch-LCD-1.69 Pinout
+========================================
+
+Source: Official Waveshare Demo Code (pin_config.h)
+
+Display (ST7789V2 SPI)
+----------------------
+LCD_DC      GPIO4     Data/Command select
+LCD_CS      GPIO5     Chip select
+LCD_SCK     GPIO6     SPI clock
+LCD_MOSI    GPIO7     SPI data (Master Out Slave In)
+LCD_RST     GPIO8     Reset
+LCD_BL      GPIO15    Backlight control
+
+Display Size: 240 x 280 pixels
+
+I2C Bus
+-------
+IIC_SDA     GPIO11    I2C data
+IIC_SCL     GPIO10    I2C clock
+
+I2C Devices:
+- CST816T   0x15      Touch controller
+- QMI8658   0x6B      6-axis IMU
+- PCF85063  0x51      RTC
+
+System
+------
+BOOT        GPIO0     Boot button (active low)
+USB_D+      GPIO20    USB data positive
+USB_D-      GPIO19    USB data negative
+
+Power (version dependent)
+-------------------------
+SYS_EN      GPIO41    System enable/power latch (new) / GPIO35 (old)
+SYS_OUT     GPIO40    Power button input (new) / GPIO36 (old)
+BUZZER      GPIO42    Buzzer (new) / GPIO33 (old)
+RTC_INT     GPIO39    RTC interrupt (new) / GPIO41 (old)
+
+Battery Monitoring
+------------------
+BAT_ADC     GPIO1     Battery voltage (via voltage divider)
+                      R1=200k, R2=100k, measures 0-9.9V range
+                      LiPo: 3.0V (empty) to 4.2V (full)
+
+Charging
+--------
+Charging IC: ETA6098 high-performance Lithium battery charger
+- No dedicated STAT pin exposed to GPIO
+- Charging status inferred from voltage trend:
+  - Rising voltage = Charging
+  - Stable ~4.2V = Full
+  - Falling voltage = Discharging
+
+Display Sleep
+-------------
+- Display sleeps after 30 seconds of inactivity
+- Wake on boot button (GPIO0) press
+- Sleep turns off backlight only (mesh still active)

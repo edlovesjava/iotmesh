@@ -1,0 +1,976 @@
+/**
+ * Touch169 Node - ESP32-S3 1.69" Touch Display
+ *
+ * Waveshare ESP32-S3-Touch-LCD-1.69 with ST7789V2 display (240x280).
+ * Shows analog clock with sensor data in corners:
+ *   - Top-left: Humidity
+ *   - Top-right: Temperature
+ *   - Bottom-left: Light level
+ *   - Bottom-right: Motion and LED states
+ *
+ * Hardware:
+ *   - ESP32-S3R8 (dual-core, 8MB PSRAM)
+ *   - 1.69" IPS LCD ST7789V2 (240x280)
+ *   - CST816T capacitive touch controller
+ *   - QMI8658 6-axis IMU (accelerometer + gyroscope)
+ *   - PCF85063 RTC chip
+ *
+ * Display Pins (ST7789V2 SPI):
+ *   - MOSI = GPIO15
+ *   - SCK  = GPIO18
+ *   - CS   = GPIO16
+ *   - DC   = GPIO2
+ *   - RST  = GPIO3
+ *   - BL   = GPIO17
+ *
+ * I2C Bus (Touch, IMU, RTC):
+ *   - SDA  = GPIO11
+ *   - SCL  = GPIO10
+ */
+
+#include <Arduino.h>
+
+// Disable MeshSwarm's built-in SSD1306 display - we use our own TFT
+#define MESHSWARM_ENABLE_DISPLAY 0
+
+#include <MeshSwarm.h>
+#include <TFT_eSPI.h>
+#include <time.h>
+#include <sys/time.h>
+
+// ============== BUILD-TIME CONFIGURATION ==============
+#ifndef NODE_NAME
+#define NODE_NAME "Touch169"
+#endif
+
+#ifndef NODE_TYPE
+#define NODE_TYPE "touch169"
+#endif
+
+// ============== TIMEZONE CONFIG ==============
+#ifndef GMT_OFFSET_SEC
+#define GMT_OFFSET_SEC  -18000  // EST = UTC-5
+#endif
+
+#ifndef DAYLIGHT_OFFSET
+#define DAYLIGHT_OFFSET 3600    // 1 hour daylight saving
+#endif
+
+// ============== DISPLAY PINS (configured in platformio.ini) ==============
+#ifndef TFT_BL
+#define TFT_BL 15
+#endif
+
+// ============== POWER CONTROL PINS ==============
+// Waveshare board has power latch circuit - must hold HIGH to stay powered on battery
+// Old version: GPIO35/36, New version: GPIO41/40
+#ifndef USE_NEW_PIN_CONFIG
+#define USE_NEW_PIN_CONFIG 0  // Set to 1 for newer board revisions
+#endif
+
+#if USE_NEW_PIN_CONFIG
+#define PWR_EN_PIN    41      // Power latch output (new boards)
+#define PWR_BTN_PIN   40      // Power button input (new boards)
+#else
+#define PWR_EN_PIN    35      // Power latch output (old boards)
+#define PWR_BTN_PIN   36      // Power button input (old boards)
+#endif
+
+// ============== BATTERY MONITORING ==============
+#define BAT_ADC_PIN   1       // GPIO1 - battery voltage via divider
+#define BAT_R1        200000.0  // 200k ohm
+#define BAT_R2        100000.0  // 100k ohm
+#define BAT_VREF      3.3       // ADC reference voltage
+
+// ============== BOOT BUTTON (center button for screen toggle) ==============
+#define BOOT_BTN_PIN  0       // GPIO0 - boot button
+
+// ============== DISPLAY GEOMETRY ==============
+#define SCREEN_WIDTH    240
+#define SCREEN_HEIGHT   280
+#define CENTER_X        120
+#define CENTER_Y        140      // Center of display
+#define CLOCK_RADIUS    80       // Clock face radius
+#define HOUR_HAND_LEN   40
+#define MIN_HAND_LEN    55
+#define SEC_HAND_LEN    65
+
+// Corner positions for sensor data
+#define CORNER_MARGIN   8
+#define CORNER_TEXT_H   16
+
+// ============== DISPLAY COLORS (RGB565) ==============
+#define COLOR_BG        0x0000  // Black
+#define COLOR_FACE      0x2104  // Dark gray
+#define COLOR_HOUR      0xFFFF  // White
+#define COLOR_MINUTE    0xFFFF  // White
+#define COLOR_SECOND    0xF800  // Red
+#define COLOR_TEXT      0xFFFF  // White
+#define COLOR_TEMP      0xFD20  // Orange
+#define COLOR_HUMID     0x07E0  // Green
+#define COLOR_LIGHT     0xFFE0  // Yellow
+#define COLOR_MOTION    0x07FF  // Cyan
+#define COLOR_LED       0xF81F  // Magenta
+#define COLOR_TICK      0x8410  // Gray
+#define COLOR_DATE      0xAD55  // Light gray
+
+// ============== GLOBALS ==============
+MeshSwarm swarm;
+TFT_eSPI tft = TFT_eSPI();
+
+// Sensor data from mesh
+String meshTemp = "--";
+String meshHumid = "--";
+String meshLight = "--";
+String meshMotion = "0";
+String meshLed = "0";
+bool hasSensorData = false;
+
+// Previous sensor values for efficient redraw
+String prevTemp = "";
+String prevHumid = "";
+String prevLight = "";
+String prevMotion = "";
+String prevLed = "";
+
+// Time tracking
+int lastSec = -1;
+int lastMin = -1;
+int lastHour = -1;
+bool timeValid = false;
+
+// Mesh-based time
+unsigned long meshTimeBase = 0;
+unsigned long meshTimeMillis = 0;
+bool hasMeshTime = false;
+
+// Previous hand positions for efficient redraw
+float prevSecAngle = -999;
+float prevMinAngle = -999;
+float prevHourAngle = -999;
+
+// Battery/charging state
+float voltageHistory[5] = {0, 0, 0, 0, 0};  // Last 5 voltage readings
+int voltageHistoryIdx = 0;
+unsigned long lastVoltageRead = 0;
+enum ChargingState { CHG_UNKNOWN, CHG_CHARGING, CHG_FULL, CHG_DISCHARGING };
+ChargingState chargingState = CHG_UNKNOWN;
+ChargingState prevChargingState = CHG_UNKNOWN;
+#define VOLTAGE_READ_INTERVAL 2000  // Read voltage every 2 seconds
+#define VOLTAGE_FULL_THRESHOLD 4.15  // Consider full above this
+#define VOLTAGE_TREND_THRESHOLD 0.02  // Min voltage change to detect trend
+
+// Screen state
+enum ScreenMode { SCREEN_CLOCK, SCREEN_DEBUG };
+ScreenMode currentScreen = SCREEN_CLOCK;
+bool screenChanged = true;
+bool firstDraw = true;
+
+// Power button state (long press to power off)
+unsigned long pwrBtnPressTime = 0;
+bool pwrBtnWasPressed = false;
+#define PWR_BTN_LONG_PRESS_MS 2000  // Hold 2 seconds to power off
+
+// Boot button state (short press to toggle screens)
+unsigned long bootBtnPressTime = 0;
+bool bootBtnWasPressed = false;
+bool bootBtnShortPress = false;
+#define BOOT_BTN_DEBOUNCE_MS  50
+
+// Display sleep state
+bool displayAsleep = false;
+unsigned long lastActivityTime = 0;
+#define DISPLAY_SLEEP_TIMEOUT_MS  30000  // 30 seconds to sleep
+
+// ============== FUNCTION DECLARATIONS ==============
+void drawClockFace();
+void drawHand(float angle, int length, uint16_t color, int width);
+void eraseHand(float angle, int length, int width);
+void updateClock();
+void updateCorners();
+void drawCornerLabels();
+void setMeshTime(unsigned long unixTime);
+bool getMeshTime(struct tm* timeinfo);
+void checkPowerButton();
+void checkBootButton();
+void powerOff();
+float readBatteryVoltage();
+int batteryPercent(float voltage);
+void updateChargingState();
+const char* getChargingStateStr();
+void drawChargingIndicator();
+void drawDebugScreen();
+void updateDebugScreen();
+void displaySleep();
+void displayWake();
+void resetActivityTimer();
+
+// ============== SETUP ==============
+void setup() {
+  // CRITICAL: Latch power immediately to stay on when running from battery
+  pinMode(PWR_EN_PIN, OUTPUT);
+  digitalWrite(PWR_EN_PIN, HIGH);
+
+  // Setup power button input
+  pinMode(PWR_BTN_PIN, INPUT);
+
+  // Setup boot button (GPIO0) with internal pullup
+  pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
+
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n[TOUCH169] Starting...");
+
+  // Initialize backlight
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+
+  // Initialize display
+  tft.init();
+  tft.setRotation(0);  // Portrait mode
+  tft.fillScreen(COLOR_BG);
+
+  Serial.println("[TOUCH169] Display initialized");
+
+  // Show startup message
+  tft.setTextColor(COLOR_TEXT);
+  tft.setTextSize(2);
+  tft.setCursor(CENTER_X - 60, CENTER_Y - 10);
+  tft.print("Starting...");
+
+  // Initialize MeshSwarm
+  swarm.begin(NODE_NAME);
+  swarm.enableTelemetry(true);
+  swarm.enableOTAReceive(NODE_TYPE);
+
+  Serial.println("[TOUCH169] MeshSwarm initialized");
+
+  // Watch for sensor data from mesh
+  swarm.watchState("temp", [](const String& key, const String& value, const String& oldValue) {
+    meshTemp = value;
+    hasSensorData = true;
+    Serial.printf("[TOUCH169] Temperature: %s C\n", value.c_str());
+  });
+
+  swarm.watchState("humidity", [](const String& key, const String& value, const String& oldValue) {
+    meshHumid = value;
+    hasSensorData = true;
+    Serial.printf("[TOUCH169] Humidity: %s %%\n", value.c_str());
+  });
+
+  swarm.watchState("light", [](const String& key, const String& value, const String& oldValue) {
+    meshLight = value;
+    hasSensorData = true;
+    Serial.printf("[TOUCH169] Light: %s\n", value.c_str());
+  });
+
+  swarm.watchState("motion", [](const String& key, const String& value, const String& oldValue) {
+    meshMotion = value;
+    Serial.printf("[TOUCH169] Motion: %s\n", value.c_str());
+  });
+
+  swarm.watchState("led", [](const String& key, const String& value, const String& oldValue) {
+    meshLed = value;
+    Serial.printf("[TOUCH169] LED: %s\n", value.c_str());
+  });
+
+  // Watch for time sync from gateway
+  swarm.watchState("time", [](const String& key, const String& value, const String& oldValue) {
+    unsigned long unixTime = value.toInt();
+    if (unixTime > 1700000000) {
+      setMeshTime(unixTime);
+      Serial.printf("[TOUCH169] Time synced: %lu\n", unixTime);
+    }
+  });
+
+  // Wildcard watcher for zone-specific sensors
+  swarm.watchState("*", [](const String& key, const String& value, const String& oldValue) {
+    if (key.startsWith("temp_") && meshTemp == "--") {
+      meshTemp = value;
+      hasSensorData = true;
+    }
+    if (key.startsWith("humidity_") && meshHumid == "--") {
+      meshHumid = value;
+      hasSensorData = true;
+    }
+    if (key.startsWith("light_") && meshLight == "--") {
+      meshLight = value;
+      hasSensorData = true;
+    }
+    if (key.startsWith("motion_")) {
+      meshMotion = value;
+    }
+  });
+
+  // Clear startup message and draw clock
+  delay(500);
+  tft.fillScreen(COLOR_BG);
+  drawClockFace();
+  drawCornerLabels();
+
+  // Initialize activity timer
+  resetActivityTimer();
+
+  Serial.println("[TOUCH169] Ready");
+}
+
+// ============== MAIN LOOP ==============
+void loop() {
+  swarm.update();
+  checkPowerButton();
+  checkBootButton();
+  updateChargingState();
+
+  // Handle boot button short press
+  if (bootBtnShortPress) {
+    bootBtnShortPress = false;
+
+    if (displayAsleep) {
+      // Wake up display on button press
+      displayWake();
+    } else {
+      // Toggle screens when awake
+      currentScreen = (currentScreen == SCREEN_CLOCK) ? SCREEN_DEBUG : SCREEN_CLOCK;
+      screenChanged = true;
+      resetActivityTimer();
+      Serial.printf("[TOUCH169] Switched to %s screen\n",
+                    currentScreen == SCREEN_CLOCK ? "clock" : "debug");
+    }
+  }
+
+  // Check for sleep timeout
+  if (!displayAsleep && (millis() - lastActivityTime >= DISPLAY_SLEEP_TIMEOUT_MS)) {
+    displaySleep();
+  }
+
+  // Only update display if awake
+  if (!displayAsleep) {
+    if (currentScreen == SCREEN_CLOCK) {
+      updateClock();
+      updateCorners();
+      drawChargingIndicator();
+    } else {
+      updateDebugScreen();
+    }
+  }
+}
+
+// ============== POWER MANAGEMENT ==============
+
+void powerOff() {
+  Serial.println("[TOUCH169] Powering off...");
+
+  // Show power off message
+  tft.fillScreen(COLOR_BG);
+  tft.setTextColor(COLOR_TEXT);
+  tft.setTextSize(2);
+  tft.setCursor(CENTER_X - 60, CENTER_Y - 10);
+  tft.print("Power Off");
+  delay(500);
+
+  // Turn off backlight
+  digitalWrite(TFT_BL, LOW);
+
+  // Release power latch - this will cut power on battery
+  digitalWrite(PWR_EN_PIN, LOW);
+
+  // If on USB power, we won't actually power off, so just wait
+  delay(2000);
+
+  // If still running (USB powered), restart instead
+  Serial.println("[TOUCH169] Still powered (USB?), restarting...");
+  ESP.restart();
+}
+
+void checkPowerButton() {
+  bool btnPressed = digitalRead(PWR_BTN_PIN) == LOW;  // Active low
+  unsigned long now = millis();
+
+  if (btnPressed && !pwrBtnWasPressed) {
+    // Button just pressed
+    pwrBtnPressTime = now;
+    pwrBtnWasPressed = true;
+  } else if (btnPressed && pwrBtnWasPressed) {
+    // Button held - check for long press to power off
+    if (now - pwrBtnPressTime >= PWR_BTN_LONG_PRESS_MS) {
+      powerOff();
+    }
+  } else if (!btnPressed && pwrBtnWasPressed) {
+    // Button released
+    pwrBtnWasPressed = false;
+  }
+}
+
+void checkBootButton() {
+  bool btnPressed = digitalRead(BOOT_BTN_PIN) == LOW;  // Active low (has pullup)
+  unsigned long now = millis();
+
+  if (btnPressed && !bootBtnWasPressed) {
+    // Button just pressed
+    bootBtnPressTime = now;
+    bootBtnWasPressed = true;
+  } else if (!btnPressed && bootBtnWasPressed) {
+    // Button released - check for valid press duration
+    unsigned long pressDuration = now - bootBtnPressTime;
+    if (pressDuration >= BOOT_BTN_DEBOUNCE_MS) {
+      bootBtnShortPress = true;
+    }
+    bootBtnWasPressed = false;
+  }
+}
+
+// ============== BATTERY FUNCTIONS ==============
+
+float readBatteryVoltage() {
+  int adcValue = analogRead(BAT_ADC_PIN);
+  float voltage = (float)adcValue * (BAT_VREF / 4095.0);
+  float actualVoltage = voltage * ((BAT_R1 + BAT_R2) / BAT_R2);
+  return actualVoltage;
+}
+
+int batteryPercent(float voltage) {
+  // LiPo voltage range: 3.0V (empty) to 4.2V (full)
+  // Linear approximation
+  if (voltage >= 4.2) return 100;
+  if (voltage <= 3.0) return 0;
+  return (int)((voltage - 3.0) / 1.2 * 100);
+}
+
+void updateChargingState() {
+  // Update voltage readings periodically
+  if (millis() - lastVoltageRead < VOLTAGE_READ_INTERVAL) return;
+  lastVoltageRead = millis();
+
+  float voltage = readBatteryVoltage();
+  voltageHistory[voltageHistoryIdx] = voltage;
+  voltageHistoryIdx = (voltageHistoryIdx + 1) % 5;
+
+  // Need at least 5 samples to determine trend
+  static int sampleCount = 0;
+  if (sampleCount < 5) {
+    sampleCount++;
+    return;
+  }
+
+  // Calculate average of first half vs second half to determine trend
+  float older = (voltageHistory[(voltageHistoryIdx + 0) % 5] +
+                 voltageHistory[(voltageHistoryIdx + 1) % 5]) / 2.0;
+  float newer = (voltageHistory[(voltageHistoryIdx + 3) % 5] +
+                 voltageHistory[(voltageHistoryIdx + 4) % 5]) / 2.0;
+  float trend = newer - older;
+
+  // Determine charging state
+  ChargingState newState;
+  if (voltage >= VOLTAGE_FULL_THRESHOLD && abs(trend) < VOLTAGE_TREND_THRESHOLD) {
+    newState = CHG_FULL;
+  } else if (trend > VOLTAGE_TREND_THRESHOLD) {
+    newState = CHG_CHARGING;
+  } else if (trend < -VOLTAGE_TREND_THRESHOLD) {
+    newState = CHG_DISCHARGING;
+  } else if (voltage >= VOLTAGE_FULL_THRESHOLD) {
+    newState = CHG_FULL;
+  } else {
+    // Stable voltage below full - likely on USB but not charging (trickle or full)
+    newState = (voltage > 4.0) ? CHG_FULL : CHG_DISCHARGING;
+  }
+
+  if (newState != chargingState) {
+    chargingState = newState;
+    Serial.printf("[TOUCH169] Charging state: %s (%.2fV, trend: %+.3fV)\n",
+                  getChargingStateStr(), voltage, trend);
+  }
+}
+
+const char* getChargingStateStr() {
+  switch (chargingState) {
+    case CHG_CHARGING:    return "Charging";
+    case CHG_FULL:        return "Full";
+    case CHG_DISCHARGING: return "Discharging";
+    default:              return "Unknown";
+  }
+}
+
+void drawChargingIndicator() {
+  // Only redraw when state changes
+  if (chargingState == prevChargingState) return;
+  prevChargingState = chargingState;
+
+  // Draw indicator in top-center area (below date)
+  int indicatorX = CENTER_X;
+  int indicatorY = 45;
+
+  // Clear previous indicator area
+  tft.fillRect(indicatorX - 20, indicatorY - 8, 40, 16, COLOR_BG);
+
+  if (chargingState == CHG_UNKNOWN) return;
+
+  // Draw battery outline
+  tft.drawRect(indicatorX - 12, indicatorY - 5, 20, 10, COLOR_TEXT);
+  tft.fillRect(indicatorX + 8, indicatorY - 2, 3, 4, COLOR_TEXT);
+
+  // Fill based on state
+  uint16_t fillColor;
+  int fillWidth;
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercent(voltage);
+  fillWidth = (percent * 16) / 100;
+
+  switch (chargingState) {
+    case CHG_CHARGING:
+      fillColor = COLOR_HUMID;  // Green when charging
+      // Draw lightning bolt symbol
+      tft.setTextColor(COLOR_HUMID, COLOR_BG);
+      tft.setTextSize(1);
+      tft.setCursor(indicatorX - 18, indicatorY - 4);
+      tft.print("+");
+      break;
+    case CHG_FULL:
+      fillColor = COLOR_HUMID;  // Green when full
+      break;
+    case CHG_DISCHARGING:
+      fillColor = (percent > 20) ? COLOR_TEXT : COLOR_SECOND;  // White or red when low
+      break;
+    default:
+      fillColor = COLOR_TICK;
+      break;
+  }
+
+  tft.fillRect(indicatorX - 10, indicatorY - 3, fillWidth, 6, fillColor);
+}
+
+// ============== DEBUG SCREEN ==============
+
+void drawDebugScreen() {
+  tft.fillScreen(COLOR_BG);
+  tft.setTextColor(COLOR_TEXT);
+  tft.setTextSize(2);
+  tft.setCursor(60, 10);
+  tft.print("DEBUG INFO");
+
+  tft.drawLine(10, 35, 230, 35, COLOR_TICK);
+}
+
+void updateDebugScreen() {
+  static unsigned long lastUpdate = 0;
+  static float lastVoltage = 0;
+
+  if (screenChanged) {
+    screenChanged = false;
+    drawDebugScreen();
+    lastUpdate = 0;  // Force immediate update
+    lastVoltage = 0;
+  }
+
+  // Update every 500ms
+  if (millis() - lastUpdate < 500) return;
+  lastUpdate = millis();
+
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercent(voltage);
+
+  tft.setTextSize(2);
+
+  // Battery section
+  tft.fillRect(10, 45, 220, 55, COLOR_BG);
+  tft.setTextColor(COLOR_HUMID);
+  tft.setCursor(10, 45);
+  tft.print("Battery:");
+  tft.setTextColor(COLOR_TEXT);
+  tft.setCursor(10, 65);
+  tft.printf("%.2fV  %d%%", voltage, percent);
+
+  // Show charging state
+  tft.setCursor(120, 65);
+  switch (chargingState) {
+    case CHG_CHARGING:
+      tft.setTextColor(COLOR_HUMID);
+      tft.print("[CHARGING]");
+      break;
+    case CHG_FULL:
+      tft.setTextColor(COLOR_HUMID);
+      tft.print("[FULL]");
+      break;
+    case CHG_DISCHARGING:
+      tft.setTextColor(COLOR_TEXT);
+      tft.print("[ON BAT]");
+      break;
+    default:
+      tft.setTextColor(COLOR_TICK);
+      tft.print("[...]");
+      break;
+  }
+
+  // Draw battery bar
+  int barWidth = (percent * 180) / 100;
+  uint16_t barColor = (chargingState == CHG_CHARGING || chargingState == CHG_FULL)
+                      ? COLOR_HUMID : (percent > 20 ? COLOR_TEXT : COLOR_SECOND);
+  tft.drawRect(10, 90, 184, 12, COLOR_TICK);
+  tft.fillRect(12, 92, barWidth, 8, barColor);
+  tft.fillRect(194, 94, 4, 4, COLOR_TICK);  // Battery nub
+
+  // Mesh info
+  tft.fillRect(10, 110, 220, 80, COLOR_BG);
+  tft.setTextColor(COLOR_TEMP);
+  tft.setCursor(10, 110);
+  tft.print("Mesh:");
+  tft.setTextColor(COLOR_TEXT);
+  tft.setTextSize(1);
+  tft.setCursor(10, 130);
+  tft.printf("Node ID: %u", swarm.getNodeId());
+  tft.setCursor(10, 145);
+  tft.printf("Peers: %d", swarm.getPeerCount());
+  tft.setCursor(10, 160);
+  tft.printf("Role: %s", swarm.isCoordinator() ? "Coordinator" : "Member");
+  tft.setCursor(10, 175);
+  tft.printf("Uptime: %lus", millis() / 1000);
+
+  // Sensor data section
+  tft.setTextSize(2);
+  tft.fillRect(10, 195, 220, 80, COLOR_BG);
+  tft.setTextColor(COLOR_LIGHT);
+  tft.setCursor(10, 195);
+  tft.print("Sensors:");
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT);
+  tft.setCursor(10, 215);
+  tft.printf("Temp: %s C", meshTemp.c_str());
+  tft.setCursor(10, 230);
+  tft.printf("Humidity: %s %%", meshHumid.c_str());
+  tft.setCursor(10, 245);
+  tft.printf("Light: %s", meshLight.c_str());
+  tft.setCursor(10, 260);
+  tft.printf("Motion: %s  LED: %s", meshMotion.c_str(), meshLed.c_str());
+}
+
+// ============== CLOCK FUNCTIONS ==============
+
+void drawClockFace() {
+  // Draw outer ring (double thickness)
+  tft.drawCircle(CENTER_X, CENTER_Y, CLOCK_RADIUS, COLOR_FACE);
+  tft.drawCircle(CENTER_X, CENTER_Y, CLOCK_RADIUS - 1, COLOR_FACE);
+
+  // Draw hour ticks
+  for (int i = 0; i < 12; i++) {
+    float angle = i * 30 * PI / 180;
+    int x1 = CENTER_X + cos(angle - PI/2) * (CLOCK_RADIUS - 10);
+    int y1 = CENTER_Y + sin(angle - PI/2) * (CLOCK_RADIUS - 10);
+    int x2 = CENTER_X + cos(angle - PI/2) * (CLOCK_RADIUS - 3);
+    int y2 = CENTER_Y + sin(angle - PI/2) * (CLOCK_RADIUS - 3);
+
+    // Thicker ticks at 12, 3, 6, 9
+    if (i % 3 == 0) {
+      tft.drawLine(x1-1, y1, x2-1, y2, COLOR_TICK);
+      tft.drawLine(x1, y1, x2, y2, COLOR_TICK);
+      tft.drawLine(x1+1, y1, x2+1, y2, COLOR_TICK);
+    } else {
+      tft.drawLine(x1, y1, x2, y2, COLOR_TICK);
+    }
+  }
+
+  // Draw center dot
+  tft.fillCircle(CENTER_X, CENTER_Y, 6, COLOR_HOUR);
+}
+
+void drawHand(float angle, int length, uint16_t color, int width) {
+  float rad = (angle - 90) * PI / 180;
+  int x = CENTER_X + cos(rad) * length;
+  int y = CENTER_Y + sin(rad) * length;
+
+  if (width > 1) {
+    // Draw thick line for hour/minute hands
+    for (int w = -width/2; w <= width/2; w++) {
+      tft.drawLine(CENTER_X + w, CENTER_Y, x + w, y, color);
+      tft.drawLine(CENTER_X, CENTER_Y + w, x, y + w, color);
+    }
+  } else {
+    tft.drawLine(CENTER_X, CENTER_Y, x, y, color);
+  }
+}
+
+void eraseHand(float angle, int length, int width) {
+  drawHand(angle, length, COLOR_BG, width + 2);
+}
+
+void updateClock() {
+  struct tm timeinfo;
+
+  // Handle screen change
+  if (screenChanged) {
+    screenChanged = false;
+    tft.fillScreen(COLOR_BG);
+    drawClockFace();
+    drawCornerLabels();
+    lastSec = -1;
+    lastMin = -1;
+    lastHour = -1;
+    prevSecAngle = -999;
+    prevMinAngle = -999;
+    prevHourAngle = -999;
+    firstDraw = true;
+  }
+
+  // Try mesh time first, then NTP
+  if (!getMeshTime(&timeinfo) && !getLocalTime(&timeinfo)) {
+    // Time not yet synced - show waiting message
+    if (!timeValid) {
+      static unsigned long lastDot = 0;
+      static int dots = 0;
+      if (millis() - lastDot > 500) {
+        lastDot = millis();
+        dots = (dots + 1) % 4;
+        tft.fillRect(CENTER_X - 70, CENTER_Y - 20, 140, 40, COLOR_BG);
+        tft.setTextSize(2);
+        tft.setTextColor(COLOR_TEXT, COLOR_BG);
+        tft.setCursor(CENTER_X - 65, CENTER_Y - 8);
+        tft.print("Waiting");
+        for (int i = 0; i < dots; i++) tft.print(".");
+      }
+    }
+    return;
+  }
+
+  // Time is valid
+  if (!timeValid) {
+    timeValid = true;
+    tft.fillScreen(COLOR_BG);
+    drawClockFace();
+    drawCornerLabels();
+    lastSec = -1;
+    lastMin = -1;
+    lastHour = -1;
+    firstDraw = true;
+  }
+
+  int sec = timeinfo.tm_sec;
+  int min = timeinfo.tm_min;
+  int hour = timeinfo.tm_hour % 12;
+
+  // Only update if time changed
+  if (sec == lastSec) return;
+
+  // Calculate angles
+  float secAngle = sec * 6;  // 360/60 = 6 degrees per second
+  float minAngle = min * 6 + sec * 0.1;  // Smooth minute hand
+  float hourAngle = hour * 30 + min * 0.5;  // 360/12 = 30 degrees per hour
+
+  // Erase old hands (in reverse order: second, minute, hour)
+  if (prevSecAngle != -999) {
+    eraseHand(prevSecAngle, SEC_HAND_LEN, 1);
+  }
+  if (prevMinAngle != -999 && (min != lastMin || lastMin == -1)) {
+    eraseHand(prevMinAngle, MIN_HAND_LEN, 3);
+  }
+  if (prevHourAngle != -999 && (hour != lastHour || min != lastMin || lastHour == -1)) {
+    eraseHand(prevHourAngle, HOUR_HAND_LEN, 5);
+  }
+
+  // Draw new hands (hour, minute, second)
+  drawHand(hourAngle, HOUR_HAND_LEN, COLOR_HOUR, 5);
+  drawHand(minAngle, MIN_HAND_LEN, COLOR_MINUTE, 3);
+  drawHand(secAngle, SEC_HAND_LEN, COLOR_SECOND, 1);
+
+  // Redraw center dot
+  tft.fillCircle(CENTER_X, CENTER_Y, 6, COLOR_SECOND);
+
+  // Redraw clock face ticks (hands may have erased them)
+  if (lastMin != min || firstDraw) {
+    drawClockFace();
+    firstDraw = false;
+  }
+
+  // Store previous angles
+  prevSecAngle = secAngle;
+  prevMinAngle = minAngle;
+  prevHourAngle = hourAngle;
+
+  // Update date display at top center (once per minute)
+  if (min != lastMin || lastMin == -1) {
+    const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const char* days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+
+    // Clear date area (between corner labels)
+    tft.fillRect(60, CORNER_MARGIN, 120, 20, COLOR_BG);
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_DATE, COLOR_BG);
+    tft.setCursor(75, CORNER_MARGIN + 4);
+    tft.printf("%s %s %d", days[timeinfo.tm_wday], months[timeinfo.tm_mon], timeinfo.tm_mday);
+  }
+
+  // Digital time at bottom center
+  if (lastSec != sec) {
+    // Clear digital time area (between corner labels)
+    tft.fillRect(70, SCREEN_HEIGHT - 28, 100, 20, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setCursor(72, SCREEN_HEIGHT - 26);
+    tft.printf("%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  }
+
+  lastSec = sec;
+  lastMin = min;
+  lastHour = hour;
+}
+
+// ============== CORNER DISPLAY FUNCTIONS ==============
+
+void drawCornerLabels() {
+  tft.setTextSize(1);
+
+  // Top-left: Humidity label
+  tft.setTextColor(COLOR_HUMID, COLOR_BG);
+  tft.setCursor(CORNER_MARGIN, CORNER_MARGIN);
+  tft.print("HUM");
+
+  // Top-right: Temperature label
+  tft.setTextColor(COLOR_TEMP, COLOR_BG);
+  tft.setCursor(SCREEN_WIDTH - CORNER_MARGIN - 30, CORNER_MARGIN);
+  tft.print("TEMP");
+
+  // Bottom-left: Light label
+  tft.setTextColor(COLOR_LIGHT, COLOR_BG);
+  tft.setCursor(CORNER_MARGIN, SCREEN_HEIGHT - CORNER_MARGIN - 8);
+  tft.print("LUX");
+
+  // Bottom-right: Motion/LED labels
+  tft.setTextColor(COLOR_MOTION, COLOR_BG);
+  tft.setCursor(SCREEN_WIDTH - CORNER_MARGIN - 30, SCREEN_HEIGHT - CORNER_MARGIN - 20);
+  tft.print("PIR");
+  tft.setTextColor(COLOR_LED, COLOR_BG);
+  tft.setCursor(SCREEN_WIDTH - CORNER_MARGIN - 30, SCREEN_HEIGHT - CORNER_MARGIN - 8);
+  tft.print("LED");
+}
+
+void updateCorners() {
+  // Top-left: Humidity
+  if (meshHumid != prevHumid) {
+    prevHumid = meshHumid;
+    tft.fillRect(CORNER_MARGIN, CORNER_MARGIN + 12, 50, 16, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setTextColor(COLOR_HUMID, COLOR_BG);
+    tft.setCursor(CORNER_MARGIN, CORNER_MARGIN + 12);
+    if (meshHumid != "--") {
+      tft.printf("%s%%", meshHumid.c_str());
+    } else {
+      tft.print("--");
+    }
+  }
+
+  // Top-right: Temperature
+  if (meshTemp != prevTemp) {
+    prevTemp = meshTemp;
+    tft.fillRect(SCREEN_WIDTH - CORNER_MARGIN - 55, CORNER_MARGIN + 12, 55, 16, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setTextColor(COLOR_TEMP, COLOR_BG);
+    tft.setCursor(SCREEN_WIDTH - CORNER_MARGIN - 55, CORNER_MARGIN + 12);
+    if (meshTemp != "--") {
+      tft.printf("%sC", meshTemp.c_str());
+    } else {
+      tft.print("--");
+    }
+  }
+
+  // Bottom-left: Light level
+  if (meshLight != prevLight) {
+    prevLight = meshLight;
+    tft.fillRect(CORNER_MARGIN, SCREEN_HEIGHT - CORNER_MARGIN - 26, 55, 16, COLOR_BG);
+    tft.setTextSize(2);
+    tft.setTextColor(COLOR_LIGHT, COLOR_BG);
+    tft.setCursor(CORNER_MARGIN, SCREEN_HEIGHT - CORNER_MARGIN - 26);
+    if (meshLight != "--") {
+      int lightVal = meshLight.toInt();
+      if (lightVal >= 1000) {
+        tft.printf("%dk", lightVal / 1000);
+      } else {
+        tft.print(meshLight.c_str());
+      }
+    } else {
+      tft.print("--");
+    }
+  }
+
+  // Bottom-right: Motion indicator
+  if (meshMotion != prevMotion) {
+    prevMotion = meshMotion;
+    bool motion = (meshMotion == "1");
+    tft.fillCircle(SCREEN_WIDTH - CORNER_MARGIN - 8, SCREEN_HEIGHT - CORNER_MARGIN - 14, 5,
+                   motion ? COLOR_MOTION : COLOR_BG);
+    if (!motion) {
+      tft.drawCircle(SCREEN_WIDTH - CORNER_MARGIN - 8, SCREEN_HEIGHT - CORNER_MARGIN - 14, 5, COLOR_TICK);
+    }
+  }
+
+  // Bottom-right: LED indicator
+  if (meshLed != prevLed) {
+    prevLed = meshLed;
+    bool ledOn = (meshLed == "1" || meshLed == "on" || meshLed == "true");
+    tft.fillCircle(SCREEN_WIDTH - CORNER_MARGIN - 8, SCREEN_HEIGHT - CORNER_MARGIN - 2, 5,
+                   ledOn ? COLOR_LED : COLOR_BG);
+    if (!ledOn) {
+      tft.drawCircle(SCREEN_WIDTH - CORNER_MARGIN - 8, SCREEN_HEIGHT - CORNER_MARGIN - 2, 5, COLOR_TICK);
+    }
+  }
+}
+
+// ============== MESH TIME FUNCTIONS ==============
+
+void setMeshTime(unsigned long unixTime) {
+  meshTimeBase = unixTime;
+  meshTimeMillis = millis();
+  hasMeshTime = true;
+
+  // Also set the system time so getLocalTime() works
+  struct timeval tv;
+  tv.tv_sec = unixTime;
+  tv.tv_usec = 0;
+  settimeofday(&tv, NULL);
+}
+
+bool getMeshTime(struct tm* timeinfo) {
+  if (!hasMeshTime) return false;
+
+  // Calculate current time based on mesh time + elapsed millis
+  unsigned long elapsed = (millis() - meshTimeMillis) / 1000;
+  time_t currentTime = meshTimeBase + elapsed + GMT_OFFSET_SEC + DAYLIGHT_OFFSET;
+
+  // Convert to struct tm
+  struct tm* t = localtime(&currentTime);
+  if (t) {
+    memcpy(timeinfo, t, sizeof(struct tm));
+    return true;
+  }
+  return false;
+}
+
+// ============== DISPLAY SLEEP FUNCTIONS ==============
+
+void resetActivityTimer() {
+  lastActivityTime = millis();
+}
+
+void displaySleep() {
+  if (displayAsleep) return;
+
+  displayAsleep = true;
+  Serial.println("[TOUCH169] Display sleeping...");
+
+  // Turn off backlight to save power
+  digitalWrite(TFT_BL, LOW);
+}
+
+void displayWake() {
+  if (!displayAsleep) return;
+
+  displayAsleep = false;
+  Serial.println("[TOUCH169] Display waking...");
+
+  // Turn on backlight
+  digitalWrite(TFT_BL, HIGH);
+
+  // Force screen redraw
+  screenChanged = true;
+  prevChargingState = CHG_UNKNOWN;  // Force battery indicator redraw
+
+  // Reset activity timer
+  resetActivityTimer();
+}

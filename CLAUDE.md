@@ -97,6 +97,7 @@ pio run -e pir --target upload && pio device monitor -e pir
 | `pir_debug` | PIR with debug logging |
 | `pir_s3` | PIR for ESP32-S3 |
 | `gateway_s3` | Gateway for ESP32-S3 |
+| `touch169` | 1.69" touch display clock (ESP32-S3) |
 
 ## Architecture
 
@@ -153,6 +154,7 @@ JSON messages over painlessMesh with type field:
 
 ### Display Nodes
 - **clock**: 1.28" round TFT (GC9A01) with analog clock, sensor gauges
+- **touch169**: 1.69" touch TFT (ST7789) with clock and sensor corners
 - **watcher**: OLED display showing all mesh state
 
 ### Infrastructure Nodes
@@ -181,6 +183,22 @@ JSON messages over painlessMesh with type field:
 - TFT SDA: GPIO23 (SPI MOSI)
 - Left button: GPIO32
 - Right button: GPIO33
+
+### Touch169 Node (Waveshare ESP32-S3-Touch-LCD-1.69)
+**Display (ST7789V2 SPI):**
+- TFT MOSI: GPIO7
+- TFT SCK: GPIO6
+- TFT CS: GPIO5
+- TFT DC: GPIO4
+- TFT RST: GPIO8
+- TFT BL: GPIO15
+
+**I2C Bus (Touch/IMU/RTC):**
+- SDA: GPIO11
+- SCL: GPIO10
+- CST816T touch controller (0x15)
+- QMI8658 IMU (accelerometer + gyroscope)
+- PCF85063 RTC
 
 ### Light Sensor (LDR or BH1750)
 **LDR (Photoresistor):**

@@ -27,6 +27,10 @@
 #define NODE_TYPE "dht"
 #endif
 
+// ============== DISPLAY SLEEP CONFIG ==============
+#define DHT_DISPLAY_SLEEP_MS  30000  // Sleep after 30 seconds of inactivity
+#define BOOT_BUTTON_PIN  0
+
 // ============== DHT CONFIGURATION ==============
 #ifndef DHT_PIN
 #define DHT_PIN         4         // GPIO4 for DHT11 data
@@ -117,6 +121,10 @@ void setup() {
   swarm.begin(NODE_NAME);
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive(NODE_TYPE);
+
+  // Enable display sleep with boot button wake
+  swarm.enableDisplaySleep(DHT_DISPLAY_SLEEP_MS);
+  swarm.addDisplayWakeButton(BOOT_BUTTON_PIN);
 
   // DHT sensor setup
   dht.begin();
