@@ -1037,6 +1037,9 @@ tft.print(meshTemp);  // Direct access to global
 **MeshState Interface:**
 
 ```cpp
+// Callback type for state changes (no std::function to avoid heap allocation)
+typedef void (*StateChangeCallback)(const String& value);
+
 // Abstract interface for mesh data access
 class IMeshState {
 public:
@@ -1051,10 +1054,9 @@ public:
 
   // Node discovery
   virtual int getNodeCount() const = 0;
-  virtual std::vector<String> getNodesOfType(const char* type) const = 0;
 
-  // State change notifications
-  virtual void onStateChange(const char* key, std::function<void(const String&)> cb) = 0;
+  // State change notifications (generic key-based for extensibility)
+  virtual void onStateChange(const char* key, StateChangeCallback cb) = 0;
 
   // Actuator control
   virtual void setLedState(bool on) = 0;
@@ -1063,6 +1065,8 @@ public:
 ```
 
 **MeshSwarmAdapter (Production Implementation):**
+
+Uses static allocation with fixed-size callback arrays for ESP32 optimization. The generic key-based approach allows extensibility - any state key can be watched without modifying the interface.
 
 ```cpp
 class MeshSwarmAdapter : public IMeshState {
@@ -1082,15 +1086,11 @@ public:
     return _swarm.getNodeCount();
   }
 
-  std::vector<String> getNodesOfType(const char* type) const override {
-    // Parse node list from mesh state
-    std::vector<String> nodes;
-    // ... implementation
-    return nodes;
-  }
-
-  void onStateChange(const char* key, std::function<void(const String&)> cb) override {
-    _callbacks[key] = cb;
+  // Generic callback registration - matches any state key string
+  void onStateChange(const char* key, StateChangeCallback cb) override {
+    if (_callbackCount < MAX_STATE_CALLBACKS) {
+      _callbacks[_callbackCount++] = {key, cb};
+    }
   }
 
   void setLedState(bool on) override {
@@ -1102,68 +1102,141 @@ public:
   }
 
 private:
+  static const int MAX_STATE_CALLBACKS = 8;
+
+  // Generic callback slot - associates a key string with a callback
+  struct StateCallbackSlot {
+    const char* key;           // State key to match ("temp", "humid", etc.)
+    StateChangeCallback cb;    // Callback function pointer
+  };
+
   MeshSwarm& _swarm;
+
+  // Cached sensor values
   String _temp = "--";
   String _humidity = "--";
   String _light = "--";
   String _motion = "0";
   String _led = "0";
-  std::map<String, std::function<void(const String&)>> _callbacks;
 
-  void setupWatchers();
+  // Static callback array (no heap allocation)
+  StateCallbackSlot _callbacks[MAX_STATE_CALLBACKS];
+  int _callbackCount = 0;
+
+  // Fire callbacks matching a key
+  void notifyCallbacks(const char* key, const String& value) {
+    for (int i = 0; i < _callbackCount; i++) {
+      if (strcmp(_callbacks[i].key, key) == 0) {
+        _callbacks[i].cb(value);
+      }
+    }
+  }
 };
 
 void MeshSwarmAdapter::begin() {
+  // Register mesh watchers that update cache and notify subscribers
   _swarm.watchState("temp", [this](const String& key, const String& value, const String& old) {
     _temp = value;
-    if (_callbacks.count("temp")) _callbacks["temp"](value);
+    notifyCallbacks("temp", value);
   });
 
   _swarm.watchState("humid", [this](const String& key, const String& value, const String& old) {
     _humidity = value;
-    if (_callbacks.count("humid")) _callbacks["humid"](value);
+    notifyCallbacks("humid", value);
   });
 
-  // ... other watchers
+  _swarm.watchState("light", [this](const String& key, const String& value, const String& old) {
+    _light = value;
+    notifyCallbacks("light", value);
+  });
+
+  _swarm.watchState("motion", [this](const String& key, const String& value, const String& old) {
+    _motion = value;
+    notifyCallbacks("motion", value);
+  });
+
+  _swarm.watchState("led", [this](const String& key, const String& value, const String& old) {
+    _led = value;
+    notifyCallbacks("led", value);
+  });
 }
 ```
 
 **MockMeshState (For Testing/Simulation):**
 
+Uses the same static callback pattern as MeshSwarmAdapter for consistency.
+
 ```cpp
 class MockMeshState : public IMeshState {
 public:
-  // Settable values for testing
+  // Settable values for testing - triggers callbacks
   void setTemperature(const String& temp) {
     _temp = temp;
-    if (_callbacks.count("temp")) _callbacks["temp"](temp);
+    notifyCallbacks("temp", temp);
   }
 
   void setHumidity(const String& humid) {
     _humidity = humid;
-    if (_callbacks.count("humid")) _callbacks["humid"](humid);
+    notifyCallbacks("humid", humid);
+  }
+
+  void setLightLevel(const String& light) {
+    _light = light;
+    notifyCallbacks("light", light);
   }
 
   void simulateMotion(bool detected) {
-    _motion = detected;
-    if (_callbacks.count("motion")) _callbacks["motion"](detected ? "1" : "0");
+    _motion = detected ? "1" : "0";
+    notifyCallbacks("motion", _motion);
   }
 
   // IMeshState implementation returns mock values
   String getTemperature() const override { return _temp; }
   String getHumidity() const override { return _humidity; }
-  // ...
+  String getLightLevel() const override { return _light; }
+  bool getMotionDetected() const override { return _motion == "1"; }
+  bool getLedState() const override { return _led == "1"; }
+  int getNodeCount() const override { return 3; }  // Simulated
+
+  void onStateChange(const char* key, StateChangeCallback cb) override {
+    if (_callbackCount < MAX_STATE_CALLBACKS) {
+      _callbacks[_callbackCount++] = {key, cb};
+    }
+  }
+
+  void setLedState(bool on) override { _led = on ? "1" : "0"; }
+  void setState(const char* key, const String& value) override { /* no-op for mock */ }
 
 private:
+  static const int MAX_STATE_CALLBACKS = 8;
+
+  struct StateCallbackSlot {
+    const char* key;
+    StateChangeCallback cb;
+  };
+
   String _temp = "72.5";
   String _humidity = "45";
-  bool _motion = false;
-  bool _led = false;
-  std::map<String, std::function<void(const String&)>> _callbacks;
+  String _light = "500";
+  String _motion = "0";
+  String _led = "0";
+
+  StateCallbackSlot _callbacks[MAX_STATE_CALLBACKS];
+  int _callbackCount = 0;
+
+  void notifyCallbacks(const char* key, const String& value) {
+    for (int i = 0; i < _callbackCount; i++) {
+      if (strcmp(_callbacks[i].key, key) == 0) {
+        _callbacks[i].cb(value);
+      }
+    }
+  }
 };
 ```
 
 **Widget Integration with IMeshState:**
+
+Since we use function pointers (not lambdas with captures), widgets use a polling approach with `update()` rather than push callbacks. This is simpler and avoids the complexity of static callback routing.
 
 ```cpp
 class SensorCornerWidget : public Widget {
@@ -1173,7 +1246,7 @@ public:
   // Bind to mesh state source
   void bindToMeshState(IMeshState& mesh, const char* stateKey);
 
-  void update();  // Pull latest value from mesh
+  void update();  // Pull latest value from mesh - call in render loop
   void render(TFT_eSPI& tft, bool forceRedraw) override;
 
 private:
@@ -1186,24 +1259,18 @@ private:
 void SensorCornerWidget::bindToMeshState(IMeshState& mesh, const char* stateKey) {
   _mesh = &mesh;
   _stateKey = stateKey;
-
-  // Register for push updates
-  mesh.onStateChange(stateKey, [this](const String& value) {
-    if (_value != value) {
-      _value = value;
-      markDirty();
-    }
-  });
 }
 
 void SensorCornerWidget::update() {
   if (!_mesh) return;
 
-  // Pull current value (for initial load or polling fallback)
+  // Pull current value (polling approach - simple and works with function pointers)
   String newValue;
   if (strcmp(_stateKey, "temp") == 0) newValue = _mesh->getTemperature();
   else if (strcmp(_stateKey, "humid") == 0) newValue = _mesh->getHumidity();
-  // ...
+  else if (strcmp(_stateKey, "light") == 0) newValue = _mesh->getLightLevel();
+  else if (strcmp(_stateKey, "motion") == 0) newValue = _mesh->getMotionDetected() ? "1" : "0";
+  else if (strcmp(_stateKey, "led") == 0) newValue = _mesh->getLedState() ? "1" : "0";
 
   if (_value != newValue) {
     _value = newValue;
@@ -1211,6 +1278,8 @@ void SensorCornerWidget::update() {
   }
 }
 ```
+
+**Note:** The `onStateChange()` callback is still available for components that need push-style updates (e.g., triggering immediate redraws or sounds on motion detection). These callbacks use static functions or free functions rather than lambdas with captures.
 
 **ClockScreen Using Abstraction:**
 
@@ -1306,6 +1375,7 @@ This section documents issues identified during critical review and how they wer
 | DebugScreen bypasses IMeshState | Updated to take both IMeshState and MeshSwarm |
 | Missing SettingsManager | Added `SettingsManager` class to Domain layer |
 | Serial command handling | Documented as future consideration, kept in main.cpp |
+| IMeshState callback consistency | Uses static callback arrays with generic string keys for extensibility |
 
 ---
 
