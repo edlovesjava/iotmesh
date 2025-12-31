@@ -535,6 +535,222 @@ private:
 
 This allows screens to optionally handle button events (e.g., stopwatch START/STOP on boot button) while keeping default behavior in the main navigation controller.
 
+### Composable UI Widgets
+
+The clock screen is complex with multiple independent elements (corners, clock face, charging indicator). Break these into reusable widget components that can be composed into screens.
+
+**Widget Base Class:**
+
+```cpp
+class Widget {
+public:
+  Widget(int16_t x, int16_t y, int16_t w, int16_t h);
+  virtual ~Widget() = default;
+
+  virtual void render(TFT_eSPI& tft, bool forceRedraw) = 0;
+  virtual bool needsRedraw() const { return _dirty; }
+  void markDirty() { _dirty = true; }
+
+  // Bounds for touch detection
+  bool containsPoint(int16_t x, int16_t y) const;
+  int16_t getX() const { return _x; }
+  int16_t getY() const { return _y; }
+
+protected:
+  int16_t _x, _y, _w, _h;
+  bool _dirty = true;
+};
+```
+
+**Corner Sensor Widgets:**
+
+```cpp
+class SensorCornerWidget : public Widget {
+public:
+  SensorCornerWidget(int16_t x, int16_t y, const char* icon, uint16_t color);
+
+  void setValue(const String& value);
+  void setUnit(const char* unit);
+  void render(TFT_eSPI& tft, bool forceRedraw) override;
+
+private:
+  String _value = "--";
+  const char* _unit;
+  const char* _icon;
+  uint16_t _color;
+  String _lastValue;
+};
+
+// Specialized corners
+class HumidityCorner : public SensorCornerWidget {
+public:
+  HumidityCorner() : SensorCornerWidget(0, 0, "💧", COLOR_HUMIDITY) {}
+};
+
+class TemperatureCorner : public SensorCornerWidget {
+public:
+  TemperatureCorner() : SensorCornerWidget(160, 0, "🌡", COLOR_TEMP) {}
+};
+
+class LightCorner : public SensorCornerWidget {
+public:
+  LightCorner() : SensorCornerWidget(0, 210, "☀", COLOR_LIGHT) {}
+};
+
+class MotionLedCorner : public SensorCornerWidget {
+public:
+  MotionLedCorner() : SensorCornerWidget(160, 210, "👁", COLOR_MOTION) {}
+  void setMotion(bool detected);
+  void setLedState(bool on);
+};
+```
+
+**Clock Face Widget:**
+
+```cpp
+class AnalogClockWidget : public Widget {
+public:
+  AnalogClockWidget(int16_t centerX, int16_t centerY, int16_t radius);
+
+  void setTime(int hour, int minute, int second);
+  void render(TFT_eSPI& tft, bool forceRedraw) override;
+
+private:
+  int _hour, _minute, _second;
+  int _lastHour, _lastMinute, _lastSecond;
+  int16_t _centerX, _centerY, _radius;
+
+  void drawHand(TFT_eSPI& tft, float angle, int length, uint16_t color, int width);
+  void eraseHand(TFT_eSPI& tft, float angle, int length);
+};
+```
+
+**Other Reusable Widgets:**
+
+```cpp
+// Header bar with back arrow and optional gear icon
+class HeaderWidget : public Widget {
+public:
+  HeaderWidget(const char* title, bool showGear = false);
+  void render(TFT_eSPI& tft, bool forceRedraw) override;
+
+private:
+  const char* _title;
+  bool _showGear;
+};
+
+// Battery/charging indicator
+class BatteryWidget : public Widget {
+public:
+  BatteryWidget(int16_t x, int16_t y);
+  void setVoltage(float voltage);
+  void setChargingState(ChargingState state);
+  void render(TFT_eSPI& tft, bool forceRedraw) override;
+
+private:
+  float _voltage;
+  ChargingState _state;
+};
+
+// Date display for top-center
+class DateWidget : public Widget {
+public:
+  DateWidget(int16_t x, int16_t y);
+  void setDate(int month, int day);
+  void render(TFT_eSPI& tft, bool forceRedraw) override;
+};
+```
+
+**Composed ClockScreen:**
+
+```cpp
+class ClockScreen : public ScreenRenderer {
+public:
+  ClockScreen(MeshState& mesh, Battery& battery);
+
+  void render(TFT_eSPI& tft, bool forceRedraw) override;
+  void handleTouch(int16_t x, int16_t y, Navigator& nav) override;
+  Screen getScreen() const override { return Screen::Clock; }
+
+private:
+  // Composed widgets
+  AnalogClockWidget _clock;
+  HumidityCorner _humidity;
+  TemperatureCorner _temperature;
+  LightCorner _light;
+  MotionLedCorner _motionLed;
+  DateWidget _date;
+  BatteryWidget _battery;
+
+  // Update widgets from mesh state
+  void updateFromMesh();
+};
+
+void ClockScreen::render(TFT_eSPI& tft, bool forceRedraw) {
+  updateFromMesh();
+
+  // Each widget only redraws if dirty
+  _clock.render(tft, forceRedraw);
+  _humidity.render(tft, forceRedraw);
+  _temperature.render(tft, forceRedraw);
+  _light.render(tft, forceRedraw);
+  _motionLed.render(tft, forceRedraw);
+  _date.render(tft, forceRedraw);
+  _battery.render(tft, forceRedraw);
+}
+
+void ClockScreen::handleTouch(int16_t x, int16_t y, Navigator& nav) {
+  // Use widget bounds for touch detection
+  if (_humidity.containsPoint(x, y)) {
+    nav.navigateTo(Screen::Humidity);
+  } else if (_temperature.containsPoint(x, y)) {
+    nav.navigateTo(Screen::Temperature);
+  } else if (_clock.containsPoint(x, y)) {
+    nav.navigateTo(Screen::ClockDetails);
+  }
+  // ...
+}
+```
+
+**Benefits of Composition:**
+- **Reusability**: `SensorCornerWidget` used on clock screen and potentially detail screens
+- **Encapsulation**: Each widget manages its own dirty state and rendering
+- **Testability**: Widgets can be unit tested independently
+- **Maintainability**: Change corner layout without touching clock logic
+- **Flexibility**: Easy to add/remove widgets or change positions
+
+**Widget Registry for Screens:**
+
+```cpp
+class ComposedScreen : public ScreenRenderer {
+protected:
+  static const int MAX_WIDGETS = 10;
+  Widget* _widgets[MAX_WIDGETS];
+  int _widgetCount = 0;
+
+  void addWidget(Widget* w) {
+    if (_widgetCount < MAX_WIDGETS) {
+      _widgets[_widgetCount++] = w;
+    }
+  }
+
+  void renderAll(TFT_eSPI& tft, bool forceRedraw) {
+    for (int i = 0; i < _widgetCount; i++) {
+      _widgets[i]->render(tft, forceRedraw);
+    }
+  }
+
+  Widget* findWidgetAt(int16_t x, int16_t y) {
+    for (int i = 0; i < _widgetCount; i++) {
+      if (_widgets[i]->containsPoint(x, y)) {
+        return _widgets[i];
+      }
+    }
+    return nullptr;
+  }
+};
+```
+
 ---
 
 ## Next Steps
