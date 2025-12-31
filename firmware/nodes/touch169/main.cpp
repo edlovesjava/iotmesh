@@ -935,6 +935,9 @@ void fallbackRender(Screen screen, TFT_eSPI& tft, Navigator& nav) {
   // Route to existing render functions
   switch (screen) {
     case Screen::Clock:
+      if (nav.hasChanged()) {
+        batteryIndicatorDirty = true;  // Force redraw when entering screen
+      }
       updateClock();
       updateCorners();
       drawBatteryIndicator();
