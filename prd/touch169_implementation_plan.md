@@ -14,65 +14,85 @@ This document outlines the phased implementation plan for the touch169 enhanced 
 
 ---
 
+## Implementation Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1.0 POC Validation | ✅ COMPLETE | Touch + Preferences working |
+| 1.1 Screen Architecture | ✅ COMPLETE | 17 screen enum, navigation, dispatcher |
+| 1.2 Touch Zone Framework | ✅ COMPLETE | Zones + swipe gestures implemented |
+| 1.3 Clock Details Screen | 🔲 NOT STARTED | |
+| 1.4 Time Settings Screen | 🔲 NOT STARTED | |
+| 1.5 Date Settings Screen | 🔲 NOT STARTED | |
+| 1.6 Navigation Menu | 🔲 NOT STARTED | Swipe-down trigger done |
+| 1.7 Boot Button Behavior | ✅ COMPLETE | Short=back, long=debug |
+| 1.8 Internal Temp Monitoring | 🔲 NOT STARTED | |
+
+**Last Updated:** 2025-12-30
+
+---
+
 ## Milestone 1: Core Navigation Foundation
 
 **Goal:** Establish touch input, screen architecture, and basic clock/settings navigation.
 **Deliverable:** Working clock with time/date settings and navigation menu.
 
-### Phase 1.0: Proof of Concept Validation
+### Phase 1.0: Proof of Concept Validation ✅ COMPLETE
 
 Validate core technical assumptions before building features.
 
-| Task | Description | Validation |
-|------|-------------|------------|
-| **POC-1: Touch Input** | Integrate SensorLib CST816T driver, read touch coordinates | Serial output shows x,y on touch; wake from sleep on touch |
-| **POC-2: Preferences Storage** | Test ESP32 Preferences library for settings persistence | Write timezone, reboot, read back correctly |
+| Task | Description | Validation | Status |
+|------|-------------|------------|--------|
+| **POC-1: Touch Input** | Integrate SensorLib CST816T driver, read touch coordinates | Serial output shows x,y on touch; wake from sleep on touch | ✅ |
+| **POC-2: Preferences Storage** | Test ESP32 Preferences library for settings persistence | Write timezone, reboot, read back correctly | ✅ |
 
 **Phase Validation:**
-- [ ] Touch coordinates display on serial monitor
-- [ ] Touch wakes display from sleep
-- [ ] Preferences survive power cycle
-- [ ] No I2C conflicts with display/RTC
+- [x] Touch coordinates display on serial monitor
+- [x] Touch wakes display from sleep
+- [x] Preferences survive power cycle
+- [x] No I2C conflicts with display/RTC
 
 ---
 
-### Phase 1.1: Screen Architecture
+### Phase 1.1: Screen Architecture ✅ COMPLETE
 
 Refactor existing clock code to support multi-screen navigation.
 
-| Task | Description | Validation |
-|------|-------------|------------|
-| 1.1.1 | Create `ScreenMode` enum and `currentScreen` state machine | Code compiles, clock still displays |
-| 1.1.2 | Implement `navigateTo()` and `navigateBack()` functions | Functions exist, no-op for now |
-| 1.1.3 | Create screen rendering dispatcher (`renderCurrentScreen()`) | Clock renders via dispatcher |
-| 1.1.4 | Add `previousScreen` tracking for nav menu back behavior | Variable tracked on navigation |
-| 1.1.5 | Implement activity timer reset on touch/button | Display sleep timeout resets |
+| Task | Description | Validation | Status |
+|------|-------------|------------|--------|
+| 1.1.1 | Create `ScreenMode` enum and `currentScreen` state machine | Code compiles, clock still displays | ✅ |
+| 1.1.2 | Implement `navigateTo()` and `navigateBack()` functions | Functions exist, no-op for now | ✅ |
+| 1.1.3 | Create screen rendering dispatcher (`renderCurrentScreen()`) | Clock renders via dispatcher | ✅ |
+| 1.1.4 | Add `previousScreen` tracking for nav menu back behavior | Variable tracked on navigation | ✅ |
+| 1.1.5 | Implement activity timer reset on touch/button | Display sleep timeout resets | ✅ |
 
 **Phase Validation:**
-- [ ] Clock displays correctly through new architecture
-- [ ] Boot button still toggles debug (legacy behavior temporarily)
-- [ ] Sleep/wake still functional
-- [ ] No memory leaks after extended runtime
+- [x] Clock displays correctly through new architecture
+- [x] Boot button navigates (back/debug)
+- [x] Sleep/wake still functional
+- [x] No memory leaks after extended runtime
 
 ---
 
-### Phase 1.2: Touch Zone Framework
+### Phase 1.2: Touch Zone Framework ✅ COMPLETE
 
 Implement touch detection and zone-based navigation.
 
-| Task | Description | Validation |
-|------|-------------|------------|
-| 1.2.1 | Create `TouchZone` struct with bounds and action | Struct defined |
-| 1.2.2 | Implement `handleTouch()` main dispatcher | Touch events routed to handlers |
-| 1.2.3 | Implement `handleClockTouch()` with zone detection | Tap center logs "clock details" |
-| 1.2.4 | Add common `handleNavIconTouch()` for bottom nav | Tap bottom-center logs "nav menu" |
-| 1.2.5 | Add common header zone detection (back arrow, gear) | Tap corners logs actions |
+| Task | Description | Validation | Status |
+|------|-------------|------------|--------|
+| 1.2.1 | Create `TouchZone` struct with bounds and action | Inline zone checks in processTouchZones() | ✅ |
+| 1.2.2 | Implement `handleTouch()` main dispatcher | Touch events routed to handlers | ✅ |
+| 1.2.3 | Implement clock screen zone detection | All 6 corner/center zones work | ✅ |
+| 1.2.4 | Add swipe gestures for nav menu | Swipe down=open, swipe up=close | ✅ |
+| 1.2.5 | Add header zone detection (back arrow, gear) | Enlarged zones (100x60, 60x60) | ✅ |
+| 1.2.6 | Add touch cooldown after screen transitions | 300ms cooldown prevents accidental taps | ✅ |
 
 **Phase Validation:**
-- [ ] All clock screen zones trigger correct serial logs
-- [ ] Touch coordinates map correctly to zones
-- [ ] No false triggers or dead zones
-- [ ] Touch debouncing works (no double-triggers)
+- [x] All clock screen zones trigger correct navigation
+- [x] Touch coordinates map correctly to zones
+- [x] No false triggers or dead zones
+- [x] Touch debouncing works (no double-triggers)
+- [x] Swipe gestures detected reliably
 
 ---
 
@@ -176,21 +196,21 @@ First settings screen - establishes settings pattern with save/cancel.
 
 ---
 
-### Phase 1.7: Boot Button Behavior
+### Phase 1.7: Boot Button Behavior ✅ COMPLETE
 
-| Task | Description | Validation |
-|------|-------------|------------|
-| 1.7.1 | Implement short press detection (< 500ms) | Short press detected |
-| 1.7.2 | Implement long press detection (> 2s) | Long press detected |
-| 1.7.3 | Short press calls `navigateBack()` | Back navigation works |
-| 1.7.4 | Long press navigates to Debug screen | Debug accessible |
-| 1.7.5 | Refactor existing debug screen to new architecture | Debug screen works |
+| Task | Description | Validation | Status |
+|------|-------------|------------|--------|
+| 1.7.1 | Implement short press detection (< 500ms) | Short press detected | ✅ |
+| 1.7.2 | Implement long press detection (> 2s) | Long press detected | ✅ |
+| 1.7.3 | Short press calls `navigateBack()` | Back navigation works | ✅ |
+| 1.7.4 | Long press navigates to Debug screen | Debug accessible | ✅ |
+| 1.7.5 | Refactor existing debug screen to new architecture | Debug screen works | ✅ |
 
 **Phase Validation:**
-- [ ] Short press = back from any screen
-- [ ] Long press = debug from any screen
-- [ ] Back from clock = no-op (already home)
-- [ ] Debug screen shows mesh/system info
+- [x] Short press = back from any screen
+- [x] Long press = debug from any screen
+- [x] Back from clock = no-op (already home)
+- [x] Debug screen shows mesh/system info
 
 ---
 
