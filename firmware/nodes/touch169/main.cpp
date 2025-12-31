@@ -38,7 +38,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <Wire.h>
-#include <Preferences.h>
+// Preferences included via SettingsManager.h
 
 // CST816T Touch Controller from SensorLib
 #include "touch/TouchClassCST816.h"
@@ -49,14 +49,25 @@
 // Extracted classes
 #include "Battery.h"
 #include "TimeSource.h"
+#include "Navigator.h"
+#include "GestureDetector.h"
+#include "SettingsManager.h"
+#include "MeshSwarmAdapter.h"
+#include "DisplayManager.h"
+#include "PowerManager.h"
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 TFT_eSPI tft = TFT_eSPI();
 TouchClassCST816 touch;
-Preferences preferences;
+SettingsManager settings;
 Battery battery;
 TimeSource timeSource;
+Navigator navigator;
+GestureDetector gesture(SWIPE_MIN_DISTANCE, SWIPE_MAX_CROSS);
+MeshSwarmAdapter meshState(swarm);
+DisplayManager display(tft, navigator, TFT_BL);
+PowerManager power;
 
 // Touch state
 bool touchInitialized = false;
@@ -64,20 +75,6 @@ int16_t touchX = -1;
 int16_t touchY = -1;
 bool touchPressed = false;
 unsigned long lastTouchTime = 0;
-unsigned long screenTransitionTime = 0;  // When last screen change occurred
-
-// Swipe gesture detection
-int16_t touchStartX = -1;
-int16_t touchStartY = -1;
-bool touchActive = false;
-
-// Sensor data from mesh
-String meshTemp = "--";
-String meshHumid = "--";
-String meshLight = "--";
-String meshMotion = "0";
-String meshLed = "0";
-bool hasSensorData = false;
 
 // Previous sensor values for efficient redraw
 String prevTemp = "";
@@ -99,37 +96,10 @@ float prevHourAngle = -999;
 // Battery indicator state (for redraw optimization)
 bool batteryIndicatorDirty = true;
 
-// ============== SCREEN MODE ENUM (Phase 1.1) ==============
-// From touch169_touch_navigation_spec.md Section 6
-enum ScreenMode {
-  SCREEN_CLOCK,               // Main clock face
-  SCREEN_HUMIDITY,            // Humidity detail
-  SCREEN_HUMIDITY_SETTINGS,   // Humidity zone settings
-  SCREEN_TEMPERATURE,         // Temperature detail
-  SCREEN_TEMP_SETTINGS,       // Temperature zone settings
-  SCREEN_LIGHT,               // Light detail
-  SCREEN_LIGHT_SETTINGS,      // Light zone settings
-  SCREEN_MOTION_LED,          // Motion & LED control
-  SCREEN_MOTION_LED_SETTINGS, // Motion/LED zone settings
-  SCREEN_CALENDAR,            // Monthly calendar view
-  SCREEN_DATE_SETTINGS,       // Set current date
-  SCREEN_CLOCK_DETAILS,       // Clock details menu
-  SCREEN_TIME_SETTINGS,       // Set time and timezone
-  SCREEN_ALARM,               // Alarm settings
-  SCREEN_STOPWATCH,           // Stopwatch
-  SCREEN_NAV_MENU,            // Navigation menu overlay
-  SCREEN_DEBUG                // Debug info
-};
-
-// Screen state
-ScreenMode currentScreen = SCREEN_CLOCK;
-ScreenMode previousScreen = SCREEN_CLOCK;  // For back navigation
-bool screenChanged = true;
+// Screen state (Navigator class manages currentScreen, previousScreen, screenChanged)
 bool firstDraw = true;
 
-// Power button state (long press to power off)
-unsigned long pwrBtnPressTime = 0;
-bool pwrBtnWasPressed = false;
+// Power button state managed by PowerManager
 
 // Boot button state (short press = back, long press = debug per spec)
 unsigned long bootBtnPressTime = 0;
@@ -137,9 +107,7 @@ bool bootBtnWasPressed = false;
 bool bootBtnShortPress = false;
 bool bootBtnLongPress = false;
 
-// Display sleep state
-bool displayAsleep = false;
-unsigned long lastActivityTime = 0;
+// Display sleep state managed by DisplayManager
 
 // ============== FUNCTION DECLARATIONS ==============
 void drawClockFace();
@@ -148,35 +116,25 @@ void eraseHand(float angle, int length, int width);
 void updateClock();
 void updateCorners();
 void drawCornerLabels();
-void checkPowerButton();
 void checkBootButton();
-void powerOff();
+void onPowerOff();            // Power off callback for PowerManager
 void drawBatteryIndicator();  // Uses Battery class
 void drawDebugScreen();
 void updateDebugScreen();
-void displaySleep();
-void displayWake();
-void resetActivityTimer();
 bool initTouch();
 void handleTouch();
-void testPreferences();
 
-// Navigation functions (Phase 1.1)
-void navigateTo(ScreenMode screen);
-void navigateBack();
-ScreenMode getParentScreen(ScreenMode screen);
-const char* getScreenName(ScreenMode screen);
-void renderCurrentScreen();
+// Fallback rendering for screens not yet migrated to ScreenRenderer
+void fallbackRender(Screen screen, TFT_eSPI& tft, Navigator& nav);
+bool fallbackTouchHandler(Screen screen, int16_t x, int16_t y, Navigator& nav);
+
+// Navigation functions (Phase 1.1) - uses Navigator class
 void processTouchZones();
 
 // ============== SETUP ==============
 void setup() {
-  // CRITICAL: Latch power immediately to stay on when running from battery
-  pinMode(PWR_EN_PIN, OUTPUT);
-  digitalWrite(PWR_EN_PIN, HIGH);
-
-  // Setup power button input
-  pinMode(PWR_BTN_PIN, INPUT);
+  // CRITICAL: Initialize power management FIRST to latch power on battery
+  power.begin();
 
   // Setup boot button (GPIO0) with internal pullup
   pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
@@ -207,8 +165,9 @@ void setup() {
     Serial.println("[TOUCH169] Touch controller FAILED (POC-1 FAIL)");
   }
 
-  // POC-2: Test Preferences library
-  testPreferences();
+  // Initialize settings manager (loads from flash, increments boot count)
+  settings.begin();
+  Serial.printf("[TOUCH169] Settings initialized, boot count: %d\n", settings.getBootCount());
 
   // Show startup message
   tft.setTextColor(COLOR_TEXT);
@@ -220,69 +179,26 @@ void setup() {
   swarm.begin(NODE_NAME);
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive(NODE_TYPE);
-
   Serial.println("[TOUCH169] MeshSwarm initialized");
 
-  // Watch for sensor data from mesh
-  swarm.watchState("temp", [](const String& key, const String& value, const String& oldValue) {
-    meshTemp = value;
-    hasSensorData = true;
-    Serial.printf("[TOUCH169] Temperature: %s C\n", value.c_str());
-  });
-
-  swarm.watchState("humidity", [](const String& key, const String& value, const String& oldValue) {
-    meshHumid = value;
-    hasSensorData = true;
-    Serial.printf("[TOUCH169] Humidity: %s %%\n", value.c_str());
-  });
-
-  swarm.watchState("light", [](const String& key, const String& value, const String& oldValue) {
-    meshLight = value;
-    hasSensorData = true;
-    Serial.printf("[TOUCH169] Light: %s\n", value.c_str());
-  });
-
-  swarm.watchState("motion", [](const String& key, const String& value, const String& oldValue) {
-    meshMotion = value;
-    Serial.printf("[TOUCH169] Motion: %s\n", value.c_str());
-  });
-
-  swarm.watchState("led", [](const String& key, const String& value, const String& oldValue) {
-    meshLed = value;
-    Serial.printf("[TOUCH169] LED: %s\n", value.c_str());
-  });
-
-  // Watch for time sync from gateway
-  swarm.watchState("time", [](const String& key, const String& value, const String& oldValue) {
-    unsigned long unixTime = value.toInt();
-    if (unixTime > 1700000000) {
-      timeSource.setMeshTime(unixTime);
-      Serial.printf("[TOUCH169] Time synced: %lu\n", unixTime);
-    }
-  });
-
-  // Wildcard watcher for zone-specific sensors
-  swarm.watchState("*", [](const String& key, const String& value, const String& oldValue) {
-    if (key.startsWith("temp_") && meshTemp == "--") {
-      meshTemp = value;
-      hasSensorData = true;
-    }
-    if (key.startsWith("humidity_") && meshHumid == "--") {
-      meshHumid = value;
-      hasSensorData = true;
-    }
-    if (key.startsWith("light_") && meshLight == "--") {
-      meshLight = value;
-      hasSensorData = true;
-    }
-    if (key.startsWith("motion_")) {
-      meshMotion = value;
-    }
-  });
+  // Initialize mesh state adapter (registers watchers for sensor data)
+  meshState.setTimeSource(&timeSource);
+  meshState.begin();
+  Serial.println("[TOUCH169] MeshState adapter initialized");
 
   // Initialize battery monitoring
   battery.begin();
   Serial.println("[TOUCH169] Battery monitoring initialized");
+
+  // Initialize display manager with fallback callbacks
+  display.setFallbackRenderer(fallbackRender);
+  display.setFallbackTouchHandler(fallbackTouchHandler);
+  display.begin();
+  Serial.println("[TOUCH169] DisplayManager initialized");
+
+  // Set power off callback to show message before power down
+  power.onPowerOff(onPowerOff);
+  Serial.println("[TOUCH169] PowerManager callback set");
 
   // Clear startup message and draw clock
   delay(500);
@@ -290,16 +206,13 @@ void setup() {
   drawClockFace();
   drawCornerLabels();
 
-  // Initialize activity timer
-  resetActivityTimer();
-
   Serial.println("[TOUCH169] Ready");
 }
 
 // ============== MAIN LOOP ==============
 void loop() {
   swarm.update();
-  checkPowerButton();
+  power.update();  // Check power button (long press = power off)
   checkBootButton();
   battery.update();  // Update battery monitoring
   handleTouch();  // POC-1: Handle touch input
@@ -308,31 +221,27 @@ void loop() {
   if (bootBtnShortPress) {
     bootBtnShortPress = false;
 
-    if (displayAsleep) {
+    if (display.isAsleep()) {
       // Wake up display on button press
-      displayWake();
+      display.wake();
     } else {
       // Short press = navigate back (per spec section 3)
-      navigateBack();
+      navigator.navigateBack();
+      display.resetActivityTimer();
     }
   }
 
   // Check for sleep timeout
-  if (!displayAsleep && (millis() - lastActivityTime >= DISPLAY_SLEEP_TIMEOUT_MS)) {
-    displaySleep();
-  }
+  display.checkSleepTimeout();
 
-  // Only update display if awake
-  if (!displayAsleep) {
-    renderCurrentScreen();
-  }
+  // Render current screen (DisplayManager checks if asleep)
+  display.render();
 }
 
 // ============== POWER MANAGEMENT ==============
 
-void powerOff() {
-  Serial.println("[TOUCH169] Powering off...");
-
+// Power off callback - shows message and turns off backlight
+void onPowerOff() {
   // Show power off message
   tft.fillScreen(COLOR_BG);
   tft.setTextColor(COLOR_TEXT);
@@ -343,35 +252,6 @@ void powerOff() {
 
   // Turn off backlight
   digitalWrite(TFT_BL, LOW);
-
-  // Release power latch - this will cut power on battery
-  digitalWrite(PWR_EN_PIN, LOW);
-
-  // If on USB power, we won't actually power off, so just wait
-  delay(2000);
-
-  // If still running (USB powered), restart instead
-  Serial.println("[TOUCH169] Still powered (USB?), restarting...");
-  ESP.restart();
-}
-
-void checkPowerButton() {
-  bool btnPressed = digitalRead(PWR_BTN_PIN) == LOW;  // Active low
-  unsigned long now = millis();
-
-  if (btnPressed && !pwrBtnWasPressed) {
-    // Button just pressed
-    pwrBtnPressTime = now;
-    pwrBtnWasPressed = true;
-  } else if (btnPressed && pwrBtnWasPressed) {
-    // Button held - check for long press to power off
-    if (now - pwrBtnPressTime >= PWR_BTN_LONG_PRESS_MS) {
-      powerOff();
-    }
-  } else if (!btnPressed && pwrBtnWasPressed) {
-    // Button released
-    pwrBtnWasPressed = false;
-  }
 }
 
 void checkBootButton() {
@@ -388,8 +268,9 @@ void checkBootButton() {
     if (now - bootBtnPressTime >= BOOT_BTN_LONG_PRESS_MS) {
       bootBtnLongPress = true;
       // Navigate to debug on long press
-      if (!displayAsleep) {
-        navigateTo(SCREEN_DEBUG);
+      if (!display.isAsleep()) {
+        navigator.navigateTo(Screen::Debug);
+        display.resetActivityTimer();
         Serial.println("[TOUCH169] Long press -> Debug screen");
       }
     }
@@ -413,9 +294,9 @@ void drawBatteryIndicator() {
 
   ChargingState state = battery.getState();
 
-  // Draw indicator in top-center area (below date)
+  // Draw indicator above digital time display (bottom center)
   int indicatorX = CENTER_X;
-  int indicatorY = 45;
+  int indicatorY = SCREEN_HEIGHT - 42;  // Above digital time at SCREEN_HEIGHT - 28
 
   // Clear previous indicator area
   tft.fillRect(indicatorX - 20, indicatorY - 8, 40, 16, COLOR_BG);
@@ -469,8 +350,8 @@ void drawDebugScreen() {
 void updateDebugScreen() {
   static unsigned long lastUpdate = 0;
 
-  if (screenChanged) {
-    screenChanged = false;
+  if (navigator.hasChanged()) {
+    navigator.clearChanged();
     drawDebugScreen();
     lastUpdate = 0;  // Force immediate update
   }
@@ -548,13 +429,13 @@ void updateDebugScreen() {
   tft.setTextSize(1);
   tft.setTextColor(COLOR_TEXT);
   tft.setCursor(10, 215);
-  tft.printf("Temp: %s C", meshTemp.c_str());
+  tft.printf("Temp: %s C", meshState.getTemperature().c_str());
   tft.setCursor(10, 230);
-  tft.printf("Humidity: %s %%", meshHumid.c_str());
+  tft.printf("Humidity: %s %%", meshState.getHumidity().c_str());
   tft.setCursor(10, 245);
-  tft.printf("Light: %s", meshLight.c_str());
+  tft.printf("Light: %s", meshState.getLightLevel().c_str());
   tft.setCursor(10, 260);
-  tft.printf("Motion: %s  LED: %s", meshMotion.c_str(), meshLed.c_str());
+  tft.printf("Motion: %s  LED: %s", meshState.getMotionRaw().c_str(), meshState.getLedRaw().c_str());
 }
 
 // ============== CLOCK FUNCTIONS ==============
@@ -610,8 +491,8 @@ void updateClock() {
   struct tm timeinfo;
 
   // Handle screen change
-  if (screenChanged) {
-    screenChanged = false;
+  if (navigator.hasChanged()) {
+    navigator.clearChanged();
     tft.fillScreen(COLOR_BG);
     drawClockFace();
     drawCornerLabels();
@@ -622,6 +503,12 @@ void updateClock() {
     prevMinAngle = -999;
     prevHourAngle = -999;
     firstDraw = true;
+    // Reset corner prev values to force redraw with current sensor data
+    prevTemp = "";
+    prevHumid = "";
+    prevLight = "";
+    prevMotion = "";
+    prevLed = "";
   }
 
   // Try to get time from TimeSource
@@ -699,17 +586,25 @@ void updateClock() {
   prevHourAngle = hourAngle;
 
   // Update date display at top center (once per minute)
+  // Two lines: day of week on top, month + day below
   if (min != lastMin || lastMin == -1) {
     const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     const char* days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 
-    // Clear date area (between corner labels)
-    tft.fillRect(60, CORNER_MARGIN, 120, 20, COLOR_BG);
-    tft.setTextSize(1);
+    // Clear date area (between corner labels) - taller for two lines
+    tft.fillRect(80, CORNER_MARGIN, 80, 36, COLOR_BG);
+    tft.setTextSize(2);
     tft.setTextColor(COLOR_DATE, COLOR_BG);
-    tft.setCursor(75, CORNER_MARGIN + 4);
-    tft.printf("%s %s %d", days[timeinfo.tm_wday], months[timeinfo.tm_mon], timeinfo.tm_mday);
+    // Line 1: Day of week centered
+    tft.setCursor(96, CORNER_MARGIN);
+    tft.print(days[timeinfo.tm_wday]);
+    // Line 2: Month + day centered
+    char dateBuf[8];
+    snprintf(dateBuf, sizeof(dateBuf), "%s %d", months[timeinfo.tm_mon], timeinfo.tm_mday);
+    int dateWidth = strlen(dateBuf) * 12;  // ~12px per char at size 2
+    tft.setCursor(120 - dateWidth / 2, CORNER_MARGIN + 18);
+    tft.print(dateBuf);
   }
 
   // Digital time at bottom center
@@ -757,6 +652,13 @@ void drawCornerLabels() {
 }
 
 void updateCorners() {
+  // Get current values from mesh state adapter
+  String meshHumid = meshState.getHumidity();
+  String meshTemp = meshState.getTemperature();
+  String meshLight = meshState.getLightLevel();
+  String meshMotion = meshState.getMotionRaw();
+  String meshLed = meshState.getLedRaw();
+
   // Top-left: Humidity
   if (meshHumid != prevHumid) {
     prevHumid = meshHumid;
@@ -827,39 +729,6 @@ void updateCorners() {
   }
 }
 
-// ============== DISPLAY SLEEP FUNCTIONS ==============
-
-void resetActivityTimer() {
-  lastActivityTime = millis();
-}
-
-void displaySleep() {
-  if (displayAsleep) return;
-
-  displayAsleep = true;
-  Serial.println("[TOUCH169] Display sleeping...");
-
-  // Turn off backlight to save power
-  digitalWrite(TFT_BL, LOW);
-}
-
-void displayWake() {
-  if (!displayAsleep) return;
-
-  displayAsleep = false;
-  Serial.println("[TOUCH169] Display waking...");
-
-  // Turn on backlight
-  digitalWrite(TFT_BL, HIGH);
-
-  // Force screen redraw
-  screenChanged = true;
-  batteryIndicatorDirty = true;  // Force battery indicator redraw
-
-  // Reset activity timer
-  resetActivityTimer();
-}
-
 // ============== TOUCH FUNCTIONS (POC-1) ==============
 
 bool initTouch() {
@@ -888,18 +757,16 @@ void handleTouch() {
     unsigned long now = millis();
 
     // Wake display on touch (before debounce to feel responsive)
-    if (displayAsleep) {
-      displayWake();
+    if (display.isAsleep()) {
+      display.wake();
       Serial.println("[TOUCH169] Touch wake");
-      touchActive = false;  // Reset swipe tracking
+      gesture.reset();  // Reset gesture tracking
       return;  // Don't process touch action when waking
     }
 
-    // Track touch start for swipe detection
-    if (!touchActive) {
-      touchStartX = touchX;
-      touchStartY = touchY;
-      touchActive = true;
+    // Track touch start for gesture detection
+    if (!gesture.isActive()) {
+      gesture.onTouchStart(touchX, touchY);
       Serial.printf("[TOUCH169] Touch start x=%d, y=%d\n", touchX, touchY);
     }
 
@@ -908,195 +775,59 @@ void handleTouch() {
     lastTouchTime = now;
 
     // Ignore touches during cooldown after screen transition
-    if (now - screenTransitionTime < TOUCH_COOLDOWN_MS) {
+    if (now - navigator.getTransitionTime() < TOUCH_COOLDOWN_MS) {
       Serial.printf("[TOUCH169] Touch ignored (cooldown) x=%d, y=%d\n", touchX, touchY);
       return;
     }
 
     // Reset activity timer on any touch
-    resetActivityTimer();
+    display.resetActivityTimer();
 
     touchPressed = true;
   } else {
-    // Touch released - check for swipe gesture
-    if (touchActive) {
-      int16_t deltaX = touchX - touchStartX;
-      int16_t deltaY = touchY - touchStartY;
+    // Touch released - detect gesture
+    if (gesture.isActive()) {
+      gesture.onTouchEnd(touchX, touchY);
+      Gesture g = gesture.getGesture();
 
-      // Swipe down detection (for nav menu on clock screen)
-      if (deltaY > SWIPE_MIN_DISTANCE && abs(deltaX) < SWIPE_MAX_CROSS) {
-        Serial.printf("[TOUCH169] Swipe DOWN detected (dy=%d)\n", deltaY);
-        if (currentScreen == SCREEN_CLOCK) {
-          navigateTo(SCREEN_NAV_MENU);
-        }
-        touchActive = false;
-        touchPressed = false;
-        return;
+      Serial.printf("[TOUCH169] Gesture: %s\n", GestureDetector::getGestureName(g));
+
+      switch (g) {
+        case Gesture::SwipeDown:
+          // Swipe down on clock screen opens nav menu
+          if (navigator.current() == Screen::Clock) {
+            navigator.navigateTo(Screen::NavMenu);
+            display.resetActivityTimer();
+          }
+          break;
+
+        case Gesture::SwipeUp:
+          // Swipe up on nav menu closes it
+          if (navigator.current() == Screen::NavMenu) {
+            navigator.navigateBack();
+            display.resetActivityTimer();
+          }
+          break;
+
+        case Gesture::Tap:
+          // Process tap at start position (more accurate)
+          touchX = gesture.getTapX();
+          touchY = gesture.getTapY();
+          processTouchZones();
+          break;
+
+        default:
+          // SwipeLeft, SwipeRight, None - not used yet
+          break;
       }
 
-      // Swipe up detection (close nav menu)
-      if (deltaY < -SWIPE_MIN_DISTANCE && abs(deltaX) < SWIPE_MAX_CROSS) {
-        Serial.printf("[TOUCH169] Swipe UP detected (dy=%d)\n", deltaY);
-        if (currentScreen == SCREEN_NAV_MENU) {
-          navigateBack();
-        }
-        touchActive = false;
-        touchPressed = false;
-        return;
-      }
-
-      // Not a swipe - process as tap at start position
-      Serial.printf("[TOUCH169] Tap at x=%d, y=%d\n", touchStartX, touchStartY);
-
-      // Use start position for tap detection (more accurate)
-      touchX = touchStartX;
-      touchY = touchStartY;
-      processTouchZones();
-
-      touchActive = false;
+      gesture.reset();
     }
     touchPressed = false;
   }
 }
 
-// ============== NAVIGATION FUNCTIONS (Phase 1.1) ==============
-
-const char* getScreenName(ScreenMode screen) {
-  switch (screen) {
-    case SCREEN_CLOCK:             return "Clock";
-    case SCREEN_HUMIDITY:          return "Humidity";
-    case SCREEN_HUMIDITY_SETTINGS: return "Humidity Settings";
-    case SCREEN_TEMPERATURE:       return "Temperature";
-    case SCREEN_TEMP_SETTINGS:     return "Temp Settings";
-    case SCREEN_LIGHT:             return "Light";
-    case SCREEN_LIGHT_SETTINGS:    return "Light Settings";
-    case SCREEN_MOTION_LED:        return "Motion/LED";
-    case SCREEN_MOTION_LED_SETTINGS: return "Motion/LED Settings";
-    case SCREEN_CALENDAR:          return "Calendar";
-    case SCREEN_DATE_SETTINGS:     return "Date Settings";
-    case SCREEN_CLOCK_DETAILS:     return "Clock Details";
-    case SCREEN_TIME_SETTINGS:     return "Time Settings";
-    case SCREEN_ALARM:             return "Alarm";
-    case SCREEN_STOPWATCH:         return "Stopwatch";
-    case SCREEN_NAV_MENU:          return "Navigation";
-    case SCREEN_DEBUG:             return "Debug";
-    default:                       return "Unknown";
-  }
-}
-
-ScreenMode getParentScreen(ScreenMode screen) {
-  // Define parent screen for each screen per navigation spec
-  switch (screen) {
-    // Sensor detail screens -> Clock
-    case SCREEN_HUMIDITY:
-    case SCREEN_TEMPERATURE:
-    case SCREEN_LIGHT:
-    case SCREEN_MOTION_LED:
-    case SCREEN_CALENDAR:
-    case SCREEN_CLOCK_DETAILS:
-      return SCREEN_CLOCK;
-
-    // Settings screens -> their parent detail screen
-    case SCREEN_HUMIDITY_SETTINGS:
-      return SCREEN_HUMIDITY;
-    case SCREEN_TEMP_SETTINGS:
-      return SCREEN_TEMPERATURE;
-    case SCREEN_LIGHT_SETTINGS:
-      return SCREEN_LIGHT;
-    case SCREEN_MOTION_LED_SETTINGS:
-      return SCREEN_MOTION_LED;
-    case SCREEN_DATE_SETTINGS:
-      return SCREEN_CALENDAR;
-    case SCREEN_TIME_SETTINGS:
-      return SCREEN_CLOCK_DETAILS;
-
-    // Sub-screens of Clock Details
-    case SCREEN_ALARM:
-    case SCREEN_STOPWATCH:
-      return SCREEN_CLOCK_DETAILS;
-
-    // Nav menu -> previous screen
-    case SCREEN_NAV_MENU:
-      return previousScreen;
-
-    // Debug -> Clock
-    case SCREEN_DEBUG:
-      return SCREEN_CLOCK;
-
-    // Clock has no parent (root)
-    case SCREEN_CLOCK:
-    default:
-      return SCREEN_CLOCK;
-  }
-}
-
-void navigateTo(ScreenMode screen) {
-  if (screen == currentScreen) return;
-
-  // Save current screen for back navigation (except when going to nav menu)
-  if (screen != SCREEN_NAV_MENU) {
-    previousScreen = currentScreen;
-  }
-
-  Serial.printf("[NAV] %s -> %s\n", getScreenName(currentScreen), getScreenName(screen));
-
-  currentScreen = screen;
-  screenChanged = true;
-  screenTransitionTime = millis();  // Start touch cooldown
-  resetActivityTimer();
-}
-
-void navigateBack() {
-  ScreenMode parent = getParentScreen(currentScreen);
-
-  // If we're at the clock (root), do nothing
-  if (currentScreen == SCREEN_CLOCK) {
-    Serial.println("[NAV] Already at root (Clock)");
-    return;
-  }
-
-  Serial.printf("[NAV] Back: %s -> %s\n", getScreenName(currentScreen), getScreenName(parent));
-
-  currentScreen = parent;
-  screenChanged = true;
-  screenTransitionTime = millis();  // Start touch cooldown
-  resetActivityTimer();
-}
-
-void renderCurrentScreen() {
-  // Main screen rendering dispatcher
-  // For now, only Clock and Debug are fully implemented
-  // Other screens will be added in later phases
-
-  switch (currentScreen) {
-    case SCREEN_CLOCK:
-      updateClock();
-      updateCorners();
-      drawBatteryIndicator();
-      break;
-
-    case SCREEN_DEBUG:
-      updateDebugScreen();
-      break;
-
-    // Placeholder for future screens - show screen name
-    default:
-      if (screenChanged) {
-        screenChanged = false;
-        tft.fillScreen(COLOR_BG);
-        tft.setTextColor(COLOR_TEXT);
-        tft.setTextSize(2);
-        tft.setCursor(20, 20);
-        tft.printf("< %s", getScreenName(currentScreen));
-        tft.setTextSize(1);
-        tft.setCursor(20, 60);
-        tft.print("Screen not yet implemented");
-        tft.setCursor(20, 80);
-        tft.print("Press boot button to go back");
-      }
-      break;
-  }
-}
+// ============== NAVIGATION FUNCTIONS (Phase 1.1 - uses Navigator class) ==============
 
 void processTouchZones() {
   // Touch zone detection based on spec coordinates
@@ -1109,118 +840,133 @@ void processTouchZones() {
   // | Center       | (60,80)   | 120x120 | Clock Details      |
   // Nav menu: Swipe down from clock screen (handled in handleTouch)
 
-  if (currentScreen == SCREEN_CLOCK) {
+  Screen current = navigator.current();
+
+  if (current == Screen::Clock) {
     // Top-Left: Humidity (0,0) 80x60
     if (touchX >= 0 && touchX < 80 && touchY >= 0 && touchY < 60) {
-      navigateTo(SCREEN_HUMIDITY);
+      navigator.navigateTo(Screen::Humidity);
+      display.resetActivityTimer();
       return;
     }
     // Top-Center: Calendar (80,0) 80x40
     if (touchX >= 80 && touchX < 160 && touchY >= 0 && touchY < 40) {
-      navigateTo(SCREEN_CALENDAR);
+      navigator.navigateTo(Screen::Calendar);
+      display.resetActivityTimer();
       return;
     }
     // Top-Right: Temperature (160,0) 80x60
     if (touchX >= 160 && touchX < 240 && touchY >= 0 && touchY < 60) {
-      navigateTo(SCREEN_TEMPERATURE);
+      navigator.navigateTo(Screen::Temperature);
+      display.resetActivityTimer();
       return;
     }
     // Bottom-Left: Light (0,210) 80x50
     if (touchX >= 0 && touchX < 80 && touchY >= 210 && touchY < 260) {
-      navigateTo(SCREEN_LIGHT);
+      navigator.navigateTo(Screen::Light);
+      display.resetActivityTimer();
       return;
     }
     // Bottom-Right: Motion/LED (160,210) 80x50
     if (touchX >= 160 && touchX < 240 && touchY >= 210 && touchY < 260) {
-      navigateTo(SCREEN_MOTION_LED);
+      navigator.navigateTo(Screen::MotionLed);
+      display.resetActivityTimer();
       return;
     }
     // Center: Clock Details (60,80) 120x120
     if (touchX >= 60 && touchX < 180 && touchY >= 80 && touchY < 200) {
-      navigateTo(SCREEN_CLOCK_DETAILS);
+      navigator.navigateTo(Screen::ClockDetails);
+      display.resetActivityTimer();
       return;
     }
   }
   // Navigation menu - back arrow or tap outside to close
-  else if (currentScreen == SCREEN_NAV_MENU) {
+  else if (current == Screen::NavMenu) {
     // Back Arrow - enlarged zone (0,0) 100x60 for easier tapping
     if (touchX >= 0 && touchX < 100 && touchY >= 0 && touchY < 60) {
-      navigateBack();
+      navigator.navigateBack();
+      display.resetActivityTimer();
       return;
     }
     // TODO: Add nav menu grid buttons here in future phase
   }
   // Detail screen header zones (all other detail screens)
-  else if (currentScreen != SCREEN_DEBUG) {
+  else if (current != Screen::Debug) {
     // Back Arrow - enlarged zone (0,0) 100x60 for easier tapping
     if (touchX >= 0 && touchX < 100 && touchY >= 0 && touchY < 60) {
-      navigateBack();
+      navigator.navigateBack();
+      display.resetActivityTimer();
       return;
     }
     // Gear Icon - enlarged zone (180,0) 60x60 for easier tapping
     if (touchX >= 180 && touchX < 240 && touchY >= 0 && touchY < 60) {
-      switch (currentScreen) {
-        case SCREEN_HUMIDITY:
-          navigateTo(SCREEN_HUMIDITY_SETTINGS);
+      switch (current) {
+        case Screen::Humidity:
+          navigator.navigateTo(Screen::HumiditySettings);
           break;
-        case SCREEN_TEMPERATURE:
-          navigateTo(SCREEN_TEMP_SETTINGS);
+        case Screen::Temperature:
+          navigator.navigateTo(Screen::TempSettings);
           break;
-        case SCREEN_LIGHT:
-          navigateTo(SCREEN_LIGHT_SETTINGS);
+        case Screen::Light:
+          navigator.navigateTo(Screen::LightSettings);
           break;
-        case SCREEN_MOTION_LED:
-          navigateTo(SCREEN_MOTION_LED_SETTINGS);
+        case Screen::MotionLed:
+          navigator.navigateTo(Screen::MotionLedSettings);
           break;
-        case SCREEN_CALENDAR:
-          navigateTo(SCREEN_DATE_SETTINGS);
+        case Screen::Calendar:
+          navigator.navigateTo(Screen::DateSettings);
           break;
-        case SCREEN_CLOCK_DETAILS:
-          navigateTo(SCREEN_TIME_SETTINGS);
+        case Screen::ClockDetails:
+          navigator.navigateTo(Screen::TimeSettings);
           break;
         default:
           break;
       }
+      display.resetActivityTimer();
       return;
     }
   }
 }
 
-// ============== PREFERENCES FUNCTIONS (POC-2) ==============
+// ============== FALLBACK FUNCTIONS FOR DISPLAYMANAGER ==============
+// These handle screens not yet migrated to ScreenRenderer classes
 
-void testPreferences() {
-  Serial.println("[TOUCH169] Testing Preferences library (POC-2)...");
+void fallbackRender(Screen screen, TFT_eSPI& tft, Navigator& nav) {
+  // Route to existing render functions
+  switch (screen) {
+    case Screen::Clock:
+      updateClock();
+      updateCorners();
+      drawBatteryIndicator();
+      break;
 
-  // Open preferences namespace
-  preferences.begin("touch169", false);  // false = read/write mode
+    case Screen::Debug:
+      updateDebugScreen();
+      break;
 
-  // Check if we have a stored test value
-  int32_t bootCount = preferences.getInt("bootCount", 0);
-  Serial.printf("[TOUCH169] Boot count before increment: %d\n", bootCount);
-
-  // Increment and store
-  bootCount++;
-  preferences.putInt("bootCount", bootCount);
-
-  // Read back to verify
-  int32_t readBack = preferences.getInt("bootCount", -1);
-  Serial.printf("[TOUCH169] Boot count after increment: %d\n", readBack);
-
-  // Test timezone storage (simulating settings persistence)
-  String testTimezone = preferences.getString("timezone", "");
-  if (testTimezone.length() == 0) {
-    // First run - store default timezone
-    preferences.putString("timezone", "EST");
-    Serial.println("[TOUCH169] Stored default timezone: EST");
-  } else {
-    Serial.printf("[TOUCH169] Read stored timezone: %s\n", testTimezone.c_str());
+    // Placeholder for future screens - show screen name
+    default:
+      if (nav.hasChanged()) {
+        nav.clearChanged();
+        tft.fillScreen(COLOR_BG);
+        tft.setTextColor(COLOR_TEXT);
+        tft.setTextSize(2);
+        tft.setCursor(20, 20);
+        tft.printf("< %s", Navigator::getScreenName(screen));
+        tft.setTextSize(1);
+        tft.setCursor(20, 60);
+        tft.print("Screen not yet implemented");
+        tft.setCursor(20, 80);
+        tft.print("Press boot button to go back");
+      }
+      break;
   }
+}
 
-  preferences.end();
-
-  if (readBack == bootCount && readBack > 0) {
-    Serial.println("[TOUCH169] Preferences write/read test (POC-2 PASS)");
-  } else {
-    Serial.println("[TOUCH169] Preferences write/read test (POC-2 FAIL)");
-  }
+bool fallbackTouchHandler(Screen screen, int16_t x, int16_t y, Navigator& nav) {
+  // Route to existing touch handler (processTouchZones uses global touchX/touchY)
+  touchX = x;
+  touchY = y;
+  processTouchZones();
+  return true;  // Always claim touch was handled
 }

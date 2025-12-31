@@ -887,7 +887,66 @@ The CST816T supports native gesture detection - leverage for:
 - Screen mirroring to other display nodes
 - Add Clock Details or Stopwatch to nav menu for direct access
 
-#### 11.0 On-Board Ambient Temperature Sensor
+#### 11.0 Wake-on-Motion via QMI8658 IMU
+
+The touch169 board includes a QMI8658 6-axis IMU (3-axis accelerometer + 3-axis gyroscope) that supports wake-on-motion (WoM) functionality. This could enable waking the display by picking up or tilting the device.
+
+**Hardware Capability:**
+- QMI8658 at I2C address 0x6B supports low-power wake-on-motion mode
+- INT1 pin can trigger when motion exceeds configurable threshold
+- Threshold is programmable (0-255, ~1mg/LSB resolution)
+- Low power consumption in WoM mode (~15µA typical)
+
+**Implementation Requirements:**
+1. **Interrupt Pin Connection**: Verify if QMI8658 INT1 is connected to an ESP32-S3 GPIO
+   - Not documented in current pinout - requires hardware investigation
+   - Must be an RTC GPIO for deep sleep wake capability
+2. **Library Support**: Use [QMI8658-Arduino-Library](https://github.com/lahavg/QMI8658-Arduino-Library) or SensorLib
+3. **Wake-on-Motion Setup**:
+   ```cpp
+   #include <QMI8658.h>
+   QMI8658 imu;
+
+   void setupMotionWake() {
+       imu.begin();
+       imu.enableWakeOnMotion(32);  // threshold 0-255, lower = more sensitive
+   }
+   ```
+4. **ESP32-S3 External Wake**: Configure GPIO interrupt for light sleep or ext0/ext1 wake
+
+**Threshold Tuning:**
+- Lower values (16-32): Very sensitive, wakes on slight movement
+- Medium values (48-64): Requires deliberate pickup/tilt
+- Higher values (96+): Only significant motion triggers wake
+
+**False Wake Prevention:**
+- Verify wake was motion-triggered by reading Status1 register (0x04 = WoM event)
+- Debounce: Require sustained motion before wake
+- Optional: Re-read IMU data to confirm intentional gesture vs vibration
+
+**Use Cases:**
+- **Raise-to-wake**: Display wakes when device is picked up (like smartwatch)
+- **Tilt-to-wake**: Wake on significant orientation change
+- **Tap-to-wake**: Double-tap gesture detection (if supported by CST816T already)
+- **Flip-to-sleep**: Face-down orientation puts display to sleep
+
+**Power Considerations:**
+- QMI8658 WoM mode: ~15µA (minimal impact)
+- Gyroscope disabled during WoM (only accelerometer active)
+- After wake, re-enable full sensor suite if needed
+
+**Open Questions:**
+- Is QMI8658 INT1 connected to a GPIO? Check [Waveshare schematic](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-1.69)
+- Which RTC GPIO is available for IMU interrupt?
+- Can INT1 share a pin with existing interrupt (RTC_INT on GPIO39)?
+
+**References:**
+- [QMI8658 Arduino Library](https://github.com/lahavg/QMI8658-Arduino-Library)
+- [QMI8658 Datasheet](https://www.qstcorp.com/en_imu_prod/QMI8658)
+- [ESP32-S3 Deep Sleep Wake Sources](https://lastminuteengineers.com/esp32-deep-sleep-wakeup-sources/)
+- [Waveshare ESP32-S3-Touch-LCD-1.69 Wiki](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-1.69)
+
+#### 11.1 On-Board Ambient Temperature Sensor
 
 The touch169 could include an on-board temperature sensor for local ambient readings:
 
@@ -907,7 +966,7 @@ The touch169 could include an on-board temperature sensor for local ambient read
 - Show in Debug screen alongside internal board temp
 - Use for thermal throttling decisions (reduce CPU if ambient + internal too high)
 
-#### 11.1 WiFi Mode & Connection Info Screen
+#### 11.2 WiFi Mode & Connection Info Screen
 
 Enable the touch169 to operate in WiFi client mode as an alternative to mesh-only mode:
 
@@ -933,7 +992,7 @@ Enable the touch169 to operate in WiFi client mode as an alternative to mesh-onl
 - Auto-fallback to mesh-only if WiFi unavailable
 - Captive portal for initial setup
 
-#### 11.2 Bluetooth Phone Pairing & Remote Monitoring
+#### 11.3 Bluetooth Phone Pairing & Remote Monitoring
 
 Enable the touch169 to pair with a smartphone for portable mesh monitoring away from home:
 

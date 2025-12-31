@@ -522,62 +522,71 @@ firmware/nodes/touch169/
 3. Data abstractions before screens that consume them
 4. Screens after all their dependencies exist
 
-### Phase R1: Extract BoardConfig
+### Phase R1: Extract BoardConfig ✅ COMPLETED
 - Move all `#define` pins to `BoardConfig.h`
 - No behavior change, just organization
 - **Risk:** None (pure constants)
+- **Status:** Created `BoardConfig.h` with namespaces (BoardConfig, Colors, Timing) + legacy macros
 
-### Phase R2: Extract Battery
+### Phase R2: Extract Battery ✅ COMPLETED
 - Create `Battery` class
 - Move voltage reading, charging state, trend detection
 - Update `main.cpp` to use `Battery` instance
 - **Risk:** Low (isolated hardware access)
+- **Status:** Created `Battery.h/.cpp` with ChargingState enum class
 
-### Phase R3: Extract TimeSource
+### Phase R3: Extract TimeSource ✅ COMPLETED
 - Create `TimeSource` class wrapping PCF85063 RTC
 - Move time get/set logic from scattered locations
 - **Dependency:** None (HAL layer)
 - **Risk:** Low (isolated hardware access)
+- **Status:** Created `TimeSource.h/.cpp` - receives mesh time via setMeshTime(), provides getTime()
 
-### Phase R4: Extract Navigator
+### Phase R4: Extract Navigator ✅ COMPLETED
 - Create `Navigator` class
 - Move screen enum, `navigateTo()`, `navigateBack()`, `getParent()`
 - Update `main.cpp` to use `Navigator` instance
 - **Dependency:** None (pure state machine)
 - **Risk:** Low
+- **Status:** Created `Navigator.h/.cpp` with Screen enum class and full navigation state machine
 
-### Phase R5: Extract GestureDetector
+### Phase R5: Extract GestureDetector ✅ COMPLETED
 - Create `GestureDetector` class
 - Move swipe detection logic out of `handleTouch()`
 - **Dependency:** None (pure logic)
 - **Risk:** Low
+- **Status:** Created `GestureDetector.h/.cpp` with Gesture enum (None, Tap, SwipeUp, SwipeDown, SwipeLeft, SwipeRight) and configurable thresholds
 
-### Phase R6: Extract SettingsManager
+### Phase R6: Extract SettingsManager ✅ COMPLETED
 - Create `SettingsManager` class
 - Move Preferences access to centralized class
 - **Dependency:** None
 - **Risk:** Low
+- **Status:** Created `SettingsManager.h/.cpp` with SettingKey/SettingDefault namespaces, convenience methods with validation
 
-### Phase R7: Create IMeshState + MeshSwarmAdapter
+### Phase R7: Create IMeshState + MeshSwarmAdapter ✅ COMPLETED
 - Create `IMeshState` interface
 - Create `MeshSwarmAdapter` implementation
 - Register mesh watchers, cache sensor values
 - **Dependency:** None (wraps MeshSwarm)
 - **Risk:** Medium (watcher registration timing)
+- **Status:** Created `IMeshState.h` interface and `MeshSwarmAdapter.h/.cpp` implementation with zone fallback support and TimeSource integration
 
-### Phase R8: Extract ScreenRenderer Base + DisplayManager
+### Phase R8: Extract ScreenRenderer Base + DisplayManager ✅ COMPLETED
 - Create abstract `ScreenRenderer` class
 - Create `DisplayManager` to route to screens
 - Create `ClockScreen` and `DebugScreen` implementations
 - **Dependency:** R4 (Navigator), R7 (IMeshState), R2 (Battery)
 - **Risk:** Medium (largest extraction)
+- **Status:** Created `ScreenRenderer.h` abstract base and `DisplayManager.h/.cpp`. Uses fallback pattern for incremental migration - existing screen logic in main.cpp works via fallbackRender/fallbackTouchHandler callbacks
 
-### Phase R9: Extract PowerManager
+### Phase R9: Extract PowerManager ✅ COMPLETED
 - Create `PowerManager` class
 - Move sleep/wake, power button, activity timer
 - Coordinates with `DisplayManager` for display sleep (calls `DisplayManager.sleep()`)
 - **Dependency:** R2 (Battery), R8 (DisplayManager for display sleep callback)
 - **Risk:** Medium (power state coordination)
+- **Status:** Created `PowerManager.h/.cpp`. Handles power latch on startup, power button long-press for power off. Uses callback pattern for power off UI (shows message, turns off backlight). main.cpp uses `power.begin()` (called FIRST in setup), `power.update()` in loop, `power.onPowerOff()` for callback
 
 ### Phase R10: Extract TouchInput + InputManager
 - Create `TouchInput` wrapper class
@@ -1457,10 +1466,29 @@ This section documents issues identified during critical review and how they wer
 
 ---
 
+## Progress Summary
+
+**Completed:** Phases R1-R9 (BoardConfig, Battery, TimeSource, Navigator, GestureDetector, SettingsManager, IMeshState, DisplayManager, PowerManager)
+**In Progress:** None
+**Next:** Phase R10 (TouchInput + InputManager)
+
+**Files Created:**
+- `firmware/nodes/touch169/BoardConfig.h` - Pin definitions, colors, timing constants
+- `firmware/nodes/touch169/Battery.h/.cpp` - Battery voltage, charging state detection
+- `firmware/nodes/touch169/TimeSource.h/.cpp` - Mesh time sync, timezone handling
+- `firmware/nodes/touch169/Navigator.h/.cpp` - Screen navigation state machine
+- `firmware/nodes/touch169/GestureDetector.h/.cpp` - Swipe/tap gesture detection
+- `firmware/nodes/touch169/SettingsManager.h/.cpp` - Persistent settings via Preferences
+- `firmware/nodes/touch169/IMeshState.h` - Abstract interface for mesh data access
+- `firmware/nodes/touch169/MeshSwarmAdapter.h/.cpp` - Production implementation of IMeshState
+- `firmware/nodes/touch169/ScreenRenderer.h` - Abstract base class for screen rendering
+- `firmware/nodes/touch169/DisplayManager.h/.cpp` - Screen routing, sleep/wake, activity timeout
+- `firmware/nodes/touch169/PowerManager.h/.cpp` - Power latch, power button handling, power-off
+
+**main.cpp:** Reduced from ~1400 to ~950 lines
+
 ## Next Steps
 
-1. Review and discuss this plan
-2. Decide on questions above
-3. Start with Phase R1 (BoardConfig) as low-risk first step
-4. Iterate through phases, testing after each
+1. Phase R10 (TouchInput + InputManager) - touch/button abstraction
+2. Future: Migrate individual screens to ScreenRenderer subclasses
 

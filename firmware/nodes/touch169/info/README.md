@@ -117,3 +117,5 @@ digitalWrite(15, HIGH);
 2. **Display Offset**: ST7789 on this board has a 20-pixel Y offset (handled in Arduino_GFX constructor)
 3. **USB Serial**: Uses native USB CDC, access via `USBSerial` or `Serial` depending on Arduino core version
 4. **Power Management**: Board includes battery charging circuit and power control pins
+
+See https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-1.69 for details

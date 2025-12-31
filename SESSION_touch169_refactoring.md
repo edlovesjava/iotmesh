@@ -1,6 +1,6 @@
 # Session: touch169 Refactoring Progress
 
-## Date: 2025-12-30
+## Date: 2025-12-31 (continued from 2025-12-30)
 
 ## Summary
 Refactoring the touch169 node from a monolithic main.cpp into modular classes following the plan in `prd/touch169_refactoring_plan.md`.
@@ -26,27 +26,70 @@ Refactoring the touch169 node from a monolithic main.cpp into modular classes fo
 - main.cpp uses `timeSource.setMeshTime()`, `timeSource.getTime()`, `timeSource.isValid()`
 - Supports future timezone settings via `setTimezone()`
 
+### Phase R4: Navigator Class ✅
+- Created `firmware/nodes/touch169/Navigator.h` and `Navigator.cpp`
+- Extracted `Screen` enum (using `enum class` for type safety)
+- Extracted `navigateTo()`, `navigateBack()`, `getParent()`, `getScreenName()` methods
+- main.cpp now uses `navigator.current()`, `navigator.navigateTo()`, `navigator.navigateBack()`
+- Screen change tracking via `navigator.hasChanged()`, `navigator.clearChanged()`, `navigator.markChanged()`
+- Transition timing via `navigator.getTransitionTime()` for touch cooldown
+
 ## Remaining Phases
 
-### Phase R4: Navigator (pending)
-- Extract screen navigation logic (ScreenMode enum, navigateTo, navigateBack, getParentScreen)
-- Touch zone definitions and processTouchZones()
+### Phase R5: GestureDetector ✅
+- Created `firmware/nodes/touch169/GestureDetector.h` and `GestureDetector.cpp`
+- Extracted Gesture enum (None, Tap, SwipeUp, SwipeDown, SwipeLeft, SwipeRight)
+- Configurable thresholds for swipe distance and cross-axis tolerance
+- main.cpp uses `gesture.onTouchStart()`, `gesture.onTouchEnd()`, `gesture.getGesture()`
 
-### Phase R5: GestureDetector (pending)
-- Extract swipe detection logic from handleTouch()
-- Tap vs swipe differentiation
+### Phase R6: SettingsManager ✅
+- Created `firmware/nodes/touch169/SettingsManager.h` and `SettingsManager.cpp`
+- SettingKey namespace with persistent key constants
+- SettingDefault namespace with default values
+- Convenience methods with validation (getBrightness, getSleepTimeout, getTempUnit, etc.)
+- main.cpp uses `settings.begin()` instead of raw Preferences
 
-### Phase R6: SettingsManager (pending)
-- Extract Preferences-based persistent settings
-- Timezone, alarm, display preferences
+### Phase R7: IMeshState + MeshSwarmAdapter ✅
+- Created `firmware/nodes/touch169/IMeshState.h` - abstract interface
+- Created `firmware/nodes/touch169/MeshSwarmAdapter.h` and `MeshSwarmAdapter.cpp`
+- Caches sensor values (temp, humidity, light, motion, LED)
+- Supports zone-specific fallback keys (temp_zone1, humidity_kitchen, etc.)
+- Integrates with TimeSource for time sync
+- main.cpp uses `meshState.getTemperature()`, `meshState.getHumidity()`, etc.
+
+### Phase R8: ScreenRenderer + DisplayManager ✅
+- Created `firmware/nodes/touch169/ScreenRenderer.h` - abstract base class
+- Created `firmware/nodes/touch169/DisplayManager.h` and `DisplayManager.cpp`
+- DisplayManager handles screen routing, sleep/wake, activity timeout
+- Uses fallback pattern for incremental migration - existing render code works via callbacks
+- main.cpp uses `display.render()`, `display.isAsleep()`, `display.wake()`, `display.resetActivityTimer()`
+
+### Phase R9: PowerManager ✅
+- Created `firmware/nodes/touch169/PowerManager.h` and `PowerManager.cpp`
+- Handles power latch (critical for battery operation)
+- Power button long-press detection for power off
+- Uses callback pattern for power off UI (shows message, turns off backlight)
+- main.cpp uses `power.begin()` (called FIRST in setup), `power.update()` in loop
+- Power off callback via `power.onPowerOff(onPowerOff)`
+
+## Remaining Phases
+
+### Phase R10: TouchInput + InputManager (pending)
+- Touch/button abstraction
 
 ## Files Modified
-- `firmware/nodes/touch169/main.cpp` - reduced from ~1400 to ~1226 lines
-- `firmware/nodes/touch169/BoardConfig.h` - NEW (169 lines)
-- `firmware/nodes/touch169/Battery.h` - NEW (98 lines)
-- `firmware/nodes/touch169/Battery.cpp` - NEW (99 lines)
-- `firmware/nodes/touch169/TimeSource.h` - NEW (84 lines)
-- `firmware/nodes/touch169/TimeSource.cpp` - NEW (49 lines)
+- `firmware/nodes/touch169/main.cpp` - reduced from ~1400 to ~950 lines
+- `firmware/nodes/touch169/BoardConfig.h` - NEW
+- `firmware/nodes/touch169/Battery.h/.cpp` - NEW
+- `firmware/nodes/touch169/TimeSource.h/.cpp` - NEW
+- `firmware/nodes/touch169/Navigator.h/.cpp` - NEW
+- `firmware/nodes/touch169/GestureDetector.h/.cpp` - NEW
+- `firmware/nodes/touch169/SettingsManager.h/.cpp` - NEW
+- `firmware/nodes/touch169/IMeshState.h` - NEW
+- `firmware/nodes/touch169/MeshSwarmAdapter.h/.cpp` - NEW
+- `firmware/nodes/touch169/ScreenRenderer.h` - NEW
+- `firmware/nodes/touch169/DisplayManager.h/.cpp` - NEW
+- `firmware/nodes/touch169/PowerManager.h/.cpp` - NEW
 - `firmware/platformio.ini` - cleaned up (removed failed Unity test setup)
 
 ## Build Status
@@ -68,7 +111,7 @@ Attempted to set up Unity test framework for native platform testing but hit iss
 ## To Resume
 1. Read this session file
 2. Read `prd/touch169_refactoring_plan.md` for full context
-3. Continue with Phase R4 (Navigator extraction) or any remaining phase
+3. Continue with Phase R10 (TouchInput + InputManager) or any remaining phase
 4. Run `pio run -e touch169` to verify builds work
 
 ## Related Files
