@@ -38,30 +38,68 @@ Each class should have one reason to change:
 
 ## Proposed Architecture
 
+```mermaid
+flowchart TB
+    subgraph Main["main.cpp"]
+        direction LR
+        TFT["TFT_eSPI instance"]
+        Setup["Setup & wire dependencies"]
+        Loop["Main loop delegates to managers"]
+    end
+
+    Main --> Navigator
+    Main --> DisplayManager
+    Main --> InputManager
+    Main --> PowerManager
+    Main --> SettingsManager
+
+    subgraph Domain["Domain Layer"]
+        Navigator["Navigator<br/>-current<br/>-parent<br/>-changed"]
+        PowerManager["PowerManager<br/>-Battery<br/>-Sleep<br/>-PowerOff"]
+        SettingsManager["SettingsManager<br/>-Prefs<br/>-load/save"]
+        GestureDetector["GestureDetector"]
+    end
+
+    subgraph Presentation["Presentation Layer"]
+        DisplayManager["DisplayManager<br/>-Screens[]<br/>-render()<br/>-sleep()"]
+        InputManager["InputManager<br/>-Touch<br/>-Buttons<br/>-Gesture"]
+        Screens["ClockScreen<br/>DebugScreen<br/>DetailScreen<br/>..."]
+    end
+
+    DisplayManager --> Screens
+    DisplayManager --> Navigator
+    InputManager --> GestureDetector
+
+    subgraph HAL["Hardware Abstraction Layer"]
+        BoardConfig["BoardConfig"]
+        Battery["Battery"]
+        TouchInput["TouchInput"]
+        TimeSource["TimeSource"]
+        IMU["IMU"]
+        Backlight["Backlight"]
+    end
+
+    PowerManager --> Battery
+    InputManager --> TouchInput
+
+    subgraph Data["Data Abstraction Layer"]
+        IMeshState["IMeshState<br/>(interface)"]
+        MeshSwarmAdapter["MeshSwarmAdapter<br/>(production)"]
+        MockMeshState["MockMeshState<br/>(testing)"]
+    end
+
+    MeshSwarmAdapter -.-> IMeshState
+    MockMeshState -.-> IMeshState
+    Screens --> IMeshState
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         main.cpp                                 │
-│  - Setup and wire dependencies                                   │
-│  - Main loop delegates to controllers                            │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-┌───────────────┐   ┌─────────────────┐   ┌─────────────────┐
-│ PowerManager  │   │ DisplayManager  │   │  InputManager   │
-│               │   │                 │   │                 │
-│ - Battery     │   │ - ScreenRouter  │   │ - TouchInput    │
-│ - Sleep/Wake  │   │ - Screens[]     │   │ - ButtonInput   │
-│ - Charging    │   │                 │   │ - GestureDetect │
-└───────────────┘   └─────────────────┘   └─────────────────┘
-        │                     │                     │
-        ▼                     ▼                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Hardware Abstraction Layer                    │
-│  - PinConfig      - I2CBus        - ADCReader                   │
-│  - GPIOWrapper    - SPIBus        - RTCDriver                   │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+**Key Ownership Rules:**
+- **Navigator** owns navigation state (current screen, parent mapping, screen changed flag)
+- **DisplayManager** owns rendering - calls `screens[current].render()`, manages sleep/wake for display
+- **InputManager** detects gestures/buttons, fires callbacks - does NOT navigate directly
+- **PowerManager** owns battery monitoring, power-off logic - delegates display sleep to DisplayManager
+- **SettingsManager** owns Preferences - screens call it to load/save settings
+- **main.cpp** wires everything together and owns TFT_eSPI instance
 
 ---
 
@@ -134,6 +172,44 @@ private:
 };
 ```
 
+#### `TimeSource` (PCF85063 RTC)
+```cpp
+class TimeSource {
+public:
+  TimeSource(int sdaPin, int sclPin);
+
+  bool begin();
+  bool hasRTC() const;  // Returns true if RTC hardware is available
+
+  // Get current time (from RTC if available, else system millis)
+  void getTime(int& hour, int& minute, int& second);
+  void getDate(int& year, int& month, int& day, int& weekday);
+
+  // Set time (syncs to RTC if available)
+  void setTime(int hour, int minute, int second);
+  void setDate(int year, int month, int day);
+
+  // For alarm features (future)
+  void setAlarm(int hour, int minute);
+  bool isAlarmTriggered();
+  void clearAlarm();
+
+private:
+  SensorPCF85063 _rtc;
+  bool _hasRTC = false;
+
+  // Fallback tracking when no RTC
+  unsigned long _bootMillis;
+  int _bootHour, _bootMinute, _bootSecond;
+};
+```
+
+**Why TimeSource?**
+- Current code accesses RTC directly in multiple places
+- Abstracts RTC vs millis-based time (for boards without RTC)
+- Centralizes time get/set for settings screens
+- Enables future alarm functionality
+
 ---
 
 ### Domain/Business Logic
@@ -194,6 +270,55 @@ private:
 };
 ```
 
+**Screen Navigation State Diagram:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Clock
+
+    Clock --> Humidity: tap top-left
+    Clock --> Temperature: tap top-right
+    Clock --> Light: tap bottom-left
+    Clock --> MotionLed: tap bottom-right
+    Clock --> Calendar: tap top-center
+    Clock --> ClockDetails: tap center
+    Clock --> NavMenu: swipe down
+    Clock --> Debug: long press boot
+
+    Humidity --> Clock: back
+    Humidity --> HumiditySettings: tap gear
+
+    Temperature --> Clock: back
+    Temperature --> TempSettings: tap gear
+
+    Light --> Clock: back
+    Light --> LightSettings: tap gear
+
+    MotionLed --> Clock: back
+    MotionLed --> MotionLedSettings: tap gear
+
+    Calendar --> Clock: back
+    Calendar --> DateSettings: tap gear
+
+    ClockDetails --> Clock: back
+    ClockDetails --> TimeSettings: tap gear
+    ClockDetails --> Alarm: tap alarm
+    ClockDetails --> Stopwatch: tap stopwatch
+
+    NavMenu --> Clock: swipe up / back
+
+    HumiditySettings --> Humidity: back
+    TempSettings --> Temperature: back
+    LightSettings --> Light: back
+    MotionLedSettings --> MotionLed: back
+    DateSettings --> Calendar: back
+    TimeSettings --> ClockDetails: back
+    Alarm --> ClockDetails: back
+    Stopwatch --> ClockDetails: back
+
+    Debug --> Clock: back
+```
+
 #### `GestureDetector`
 ```cpp
 enum class Gesture { None, Tap, SwipeUp, SwipeDown, SwipeLeft, SwipeRight };
@@ -217,6 +342,53 @@ private:
   int _minSwipe, _maxCross;
 };
 ```
+
+#### `SettingsManager`
+```cpp
+// Keys for persistent settings
+namespace SettingKey {
+  constexpr const char* BRIGHTNESS = "brightness";
+  constexpr const char* SLEEP_TIMEOUT = "sleepTimeout";
+  constexpr const char* TEMP_UNIT = "tempUnit";  // 'C' or 'F'
+  constexpr const char* CLOCK_FORMAT = "clockFmt";  // 12 or 24
+  // Future: alarm settings, theme, etc.
+}
+
+class SettingsManager {
+public:
+  SettingsManager();
+
+  void begin();  // Load from Preferences
+
+  // Generic get/set
+  int getInt(const char* key, int defaultVal = 0);
+  void setInt(const char* key, int value);
+  String getString(const char* key, const String& defaultVal = "");
+  void setString(const char* key, const String& value);
+
+  // Convenience methods
+  int getBrightness();  // 0-255
+  void setBrightness(int brightness);
+  int getSleepTimeout();  // seconds
+  void setSleepTimeout(int seconds);
+  char getTempUnit();  // 'C' or 'F'
+  void setTempUnit(char unit);
+  int getClockFormat();  // 12 or 24
+  void setClockFormat(int format);
+
+  void save();  // Explicit save (auto-saves on set by default)
+
+private:
+  Preferences _prefs;
+  bool _dirty = false;
+};
+```
+
+**Why SettingsManager?**
+- Current code scatters Preferences access across screens
+- Centralizes all persistent settings in one place
+- Provides typed accessors with defaults
+- Screens don't need to know about Preferences API
 
 ---
 
@@ -263,18 +435,23 @@ private:
 ```cpp
 class DebugScreen : public ScreenRenderer {
 public:
-  DebugScreen(MeshSwarm& swarm, Battery& battery, IMU& imu);
+  // Note: Uses IMeshState for consistency, plus direct MeshSwarm for debug-only info
+  // (node count, peer list, coordinator status - not exposed in IMeshState)
+  DebugScreen(IMeshState& mesh, MeshSwarm& swarm, Battery& battery, IMU& imu);
 
   void render(TFT_eSPI& tft, bool forceRedraw) override;
   void handleTouch(int16_t x, int16_t y, Navigator& nav) override;
   Screen getScreen() const override { return Screen::Debug; }
 
 private:
-  MeshSwarm& _swarm;
+  IMeshState& _mesh;      // For sensor values
+  MeshSwarm& _swarm;      // For debug-specific info (peers, coordinator, etc.)
   Battery& _battery;
   IMU& _imu;
 };
 ```
+
+**Note on DebugScreen:** The debug screen needs access to low-level mesh info (peer list, coordinator status, message counts) that isn't part of the `IMeshState` abstraction. It takes both `IMeshState&` for sensor values and `MeshSwarm&` for debug-specific data. This is acceptable because DebugScreen is explicitly a development/debugging tool.
 
 #### `DisplayManager`
 ```cpp
@@ -313,11 +490,16 @@ firmware/nodes/touch169/
 │   ├── Battery.h/.cpp          # Battery voltage, charging detection
 │   ├── TouchInput.h/.cpp       # CST816T wrapper
 │   ├── IMU.h/.cpp              # QMI8658 wrapper
+│   ├── TimeSource.h/.cpp       # PCF85063 RTC wrapper
 │   └── Backlight.h/.cpp        # Display backlight control
 ├── domain/
 │   ├── Navigator.h/.cpp        # Screen state machine
 │   ├── GestureDetector.h/.cpp  # Swipe/tap detection
-│   └── PowerManager.h/.cpp     # Sleep, wake, power-off
+│   ├── PowerManager.h/.cpp     # Sleep, wake, power-off
+│   └── SettingsManager.h/.cpp  # Preferences persistence
+├── data/
+│   ├── IMeshState.h            # Abstract interface for mesh data
+│   └── MeshSwarmAdapter.h/.cpp # Production implementation
 ├── screens/
 │   ├── ScreenRenderer.h        # Abstract base class
 │   ├── ClockScreen.h/.cpp      # Main clock face
@@ -334,40 +516,114 @@ firmware/nodes/touch169/
 
 ## Refactoring Strategy
 
+**Ordering Rationale:** Phases are ordered to minimize dependencies:
+1. Start with pure extraction (no dependencies)
+2. HAL classes before domain classes that use them
+3. Data abstractions before screens that consume them
+4. Screens after all their dependencies exist
+
 ### Phase R1: Extract BoardConfig
 - Move all `#define` pins to `BoardConfig.h`
 - No behavior change, just organization
+- **Risk:** None (pure constants)
 
 ### Phase R2: Extract Battery
 - Create `Battery` class
 - Move voltage reading, charging state, trend detection
 - Update `main.cpp` to use `Battery` instance
+- **Risk:** Low (isolated hardware access)
 
-### Phase R3: Extract Navigator
+### Phase R3: Extract TimeSource
+- Create `TimeSource` class wrapping PCF85063 RTC
+- Move time get/set logic from scattered locations
+- **Dependency:** None (HAL layer)
+- **Risk:** Low (isolated hardware access)
+
+### Phase R4: Extract Navigator
 - Create `Navigator` class
 - Move screen enum, `navigateTo()`, `navigateBack()`, `getParent()`
 - Update `main.cpp` to use `Navigator` instance
+- **Dependency:** None (pure state machine)
+- **Risk:** Low
 
-### Phase R4: Extract GestureDetector
+### Phase R5: Extract GestureDetector
 - Create `GestureDetector` class
 - Move swipe detection logic out of `handleTouch()`
+- **Dependency:** None (pure logic)
+- **Risk:** Low
 
-### Phase R5: Extract ScreenRenderer Base
+### Phase R6: Extract SettingsManager
+- Create `SettingsManager` class
+- Move Preferences access to centralized class
+- **Dependency:** None
+- **Risk:** Low
+
+### Phase R7: Create IMeshState + MeshSwarmAdapter
+- Create `IMeshState` interface
+- Create `MeshSwarmAdapter` implementation
+- Register mesh watchers, cache sensor values
+- **Dependency:** None (wraps MeshSwarm)
+- **Risk:** Medium (watcher registration timing)
+
+### Phase R8: Extract ScreenRenderer Base + DisplayManager
 - Create abstract `ScreenRenderer` class
-- Create `ClockScreen` and `DebugScreen`
 - Create `DisplayManager` to route to screens
+- Create `ClockScreen` and `DebugScreen` implementations
+- **Dependency:** R4 (Navigator), R7 (IMeshState), R2 (Battery)
+- **Risk:** Medium (largest extraction)
 
-### Phase R6: Extract PowerManager
+### Phase R9: Extract PowerManager
 - Create `PowerManager` class
 - Move sleep/wake, power button, activity timer
+- Coordinates with `DisplayManager` for display sleep (calls `DisplayManager.sleep()`)
+- **Dependency:** R2 (Battery), R8 (DisplayManager for display sleep callback)
+- **Risk:** Medium (power state coordination)
 
-### Phase R7: Extract TouchInput
+### Phase R10: Extract TouchInput + InputManager
 - Create `TouchInput` wrapper class
-- Encapsulate CST816T initialization and reading
+- Create `InputManager` combining touch + gesture detection
+- **Dependency:** R5 (GestureDetector)
+- **Risk:** Low
 
-### Phase R8: Add IMU
+### Phase R11: Add IMU
 - Create `IMU` class for QMI8658
 - Add temperature reading to `DebugScreen`
+- **Dependency:** R8 (DebugScreen exists)
+- **Risk:** Low
+
+**Phase Dependency Graph:**
+
+```mermaid
+flowchart LR
+    subgraph Independent["Independent Phases (can run in parallel)"]
+        R1["R1: BoardConfig"]
+        R2["R2: Battery"]
+        R3["R3: TimeSource"]
+        R4["R4: Navigator"]
+        R5["R5: GestureDetector"]
+        R6["R6: SettingsManager"]
+        R7["R7: IMeshState"]
+    end
+
+    R1 --> R8
+    R2 --> R8
+    R3 --> R8
+    R4 --> R8
+    R6 --> R8
+    R7 --> R8
+
+    R8["R8: Screens/DisplayManager"]
+
+    R2 --> R9
+    R8 --> R9
+    R9["R9: PowerManager"]
+
+    R5 --> R10
+    R10["R10: TouchInput/InputManager"]
+
+    R8 --> R11
+    R11["R11: IMU"]
+```
 
 ---
 
@@ -404,16 +660,27 @@ int screenCount = 0;
 - Navigation events (screen changed)
 - Power events (sleep, wake)
 
-```cpp
-// Callback types
-using TouchCallback = std::function<void(int16_t x, int16_t y)>;
-using GestureCallback = std::function<void(Gesture gesture)>;
-using NavigationCallback = std::function<void(Screen from, Screen to)>;
+**Note:** The examples below show `std::function` for clarity, but the actual implementation should use **fixed-size callback arrays with function pointers** to align with our static allocation decision. This avoids heap allocation from `std::function` and `std::map`.
 
-// Registration
-void onTap(TouchCallback cb);
-void onSwipe(GestureCallback cb);
-void onNavigate(NavigationCallback cb);
+```cpp
+// Static callback approach (preferred for ESP32)
+static const int MAX_CALLBACKS = 4;
+
+class InputManager {
+  // Fixed callback slots instead of std::function
+  void (*_tapCallbacks[MAX_CALLBACKS])(int16_t, int16_t);
+  void (*_gestureCallbacks[MAX_CALLBACKS])(Gesture);
+  int _tapCallbackCount = 0;
+  int _gestureCallbackCount = 0;
+
+public:
+  void onTap(void (*cb)(int16_t, int16_t)) {
+    if (_tapCallbackCount < MAX_CALLBACKS) {
+      _tapCallbacks[_tapCallbackCount++] = cb;
+    }
+  }
+  // ...
+};
 ```
 
 Benefits:
@@ -421,6 +688,7 @@ Benefits:
 - Screens can register for events they care about
 - Easier to add new event types later
 - Enables testing with mock events
+- No heap allocation (fixed arrays)
 
 ### 4. Namespace vs Class for Config
 
@@ -993,6 +1261,51 @@ Add as **Phase R9: Mesh State Abstraction** after IMU:
 3. Create `MockMeshState` for testing
 4. Update widgets to use `bindToMeshState()`
 5. Update screens to receive `IMeshState&` instead of accessing globals
+
+### Serial Command Handling
+
+The current `main.cpp` includes serial command processing (`status`, `reboot`, `set`, etc.) inline in the loop. This could be extracted to a `SerialCommandHandler` class in a future phase.
+
+**Current Approach (Acceptable):** Keep serial commands in `main.cpp` for now since:
+- Commands need access to most managers (Navigator, PowerManager, MeshSwarm, etc.)
+- Relatively small code footprint
+- main.cpp is the natural "coordinator" that has visibility to all components
+
+**Future Option (If Commands Grow):**
+```cpp
+class SerialCommandHandler {
+public:
+  SerialCommandHandler(Navigator& nav, PowerManager& power,
+                       IMeshState& mesh, SettingsManager& settings);
+
+  void begin();
+  void update();  // Call in loop to process serial input
+
+private:
+  void handleCommand(const String& cmd);
+  // ... references to managers
+};
+```
+
+This is **not included in the current refactoring phases** but noted here for future consideration if serial command handling becomes more complex.
+
+---
+
+## Critical Review Notes
+
+This section documents issues identified during critical review and how they were addressed:
+
+| Issue | Resolution |
+|-------|------------|
+| Architecture diagram unclear | Updated with explicit ownership rules and Key Ownership section |
+| Missing TimeSource abstraction | Added `TimeSource` class to HAL, added Phase R3 |
+| Widget over-engineering | Keeping subclasses per user preference (HumidityCorner, etc.) |
+| std::function on ESP32 | Added note about fixed-size callback arrays |
+| Phase ordering dependencies | Reordered phases with explicit dependency graph |
+| PowerManager vs DisplayManager sleep | PowerManager calls DisplayManager.sleep() |
+| DebugScreen bypasses IMeshState | Updated to take both IMeshState and MeshSwarm |
+| Missing SettingsManager | Added `SettingsManager` class to Domain layer |
+| Serial command handling | Documented as future consideration, kept in main.cpp |
 
 ---
 
