@@ -61,6 +61,30 @@
 #define TFT_BL 15
 #endif
 
+// ============== POWER CONTROL PINS ==============
+// Waveshare board has power latch circuit - must hold HIGH to stay powered on battery
+// Old version: GPIO35/36, New version: GPIO41/40
+#ifndef USE_NEW_PIN_CONFIG
+#define USE_NEW_PIN_CONFIG 0  // Set to 1 for newer board revisions
+#endif
+
+#if USE_NEW_PIN_CONFIG
+#define PWR_EN_PIN    41      // Power latch output (new boards)
+#define PWR_BTN_PIN   40      // Power button input (new boards)
+#else
+#define PWR_EN_PIN    35      // Power latch output (old boards)
+#define PWR_BTN_PIN   36      // Power button input (old boards)
+#endif
+
+// ============== BATTERY MONITORING ==============
+#define BAT_ADC_PIN   1       // GPIO1 - battery voltage via divider
+#define BAT_R1        200000.0  // 200k ohm
+#define BAT_R2        100000.0  // 100k ohm
+#define BAT_VREF      3.3       // ADC reference voltage
+
+// ============== BOOT BUTTON (center button for screen toggle) ==============
+#define BOOT_BTN_PIN  0       // GPIO0 - boot button
+
 // ============== DISPLAY GEOMETRY ==============
 #define SCREEN_WIDTH    240
 #define SCREEN_HEIGHT   280
@@ -125,9 +149,38 @@ float prevSecAngle = -999;
 float prevMinAngle = -999;
 float prevHourAngle = -999;
 
+// Battery/charging state
+float voltageHistory[5] = {0, 0, 0, 0, 0};  // Last 5 voltage readings
+int voltageHistoryIdx = 0;
+unsigned long lastVoltageRead = 0;
+enum ChargingState { CHG_UNKNOWN, CHG_CHARGING, CHG_FULL, CHG_DISCHARGING };
+ChargingState chargingState = CHG_UNKNOWN;
+ChargingState prevChargingState = CHG_UNKNOWN;
+#define VOLTAGE_READ_INTERVAL 2000  // Read voltage every 2 seconds
+#define VOLTAGE_FULL_THRESHOLD 4.15  // Consider full above this
+#define VOLTAGE_TREND_THRESHOLD 0.02  // Min voltage change to detect trend
+
 // Screen state
+enum ScreenMode { SCREEN_CLOCK, SCREEN_DEBUG };
+ScreenMode currentScreen = SCREEN_CLOCK;
 bool screenChanged = true;
 bool firstDraw = true;
+
+// Power button state (long press to power off)
+unsigned long pwrBtnPressTime = 0;
+bool pwrBtnWasPressed = false;
+#define PWR_BTN_LONG_PRESS_MS 2000  // Hold 2 seconds to power off
+
+// Boot button state (short press to toggle screens)
+unsigned long bootBtnPressTime = 0;
+bool bootBtnWasPressed = false;
+bool bootBtnShortPress = false;
+#define BOOT_BTN_DEBOUNCE_MS  50
+
+// Display sleep state
+bool displayAsleep = false;
+unsigned long lastActivityTime = 0;
+#define DISPLAY_SLEEP_TIMEOUT_MS  30000  // 30 seconds to sleep
 
 // ============== FUNCTION DECLARATIONS ==============
 void drawClockFace();
@@ -138,9 +191,32 @@ void updateCorners();
 void drawCornerLabels();
 void setMeshTime(unsigned long unixTime);
 bool getMeshTime(struct tm* timeinfo);
+void checkPowerButton();
+void checkBootButton();
+void powerOff();
+float readBatteryVoltage();
+int batteryPercent(float voltage);
+void updateChargingState();
+const char* getChargingStateStr();
+void drawChargingIndicator();
+void drawDebugScreen();
+void updateDebugScreen();
+void displaySleep();
+void displayWake();
+void resetActivityTimer();
 
 // ============== SETUP ==============
 void setup() {
+  // CRITICAL: Latch power immediately to stay on when running from battery
+  pinMode(PWR_EN_PIN, OUTPUT);
+  digitalWrite(PWR_EN_PIN, HIGH);
+
+  // Setup power button input
+  pinMode(PWR_BTN_PIN, INPUT);
+
+  // Setup boot button (GPIO0) with internal pullup
+  pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
+
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n[TOUCH169] Starting...");
@@ -232,14 +308,338 @@ void setup() {
   drawClockFace();
   drawCornerLabels();
 
+  // Initialize activity timer
+  resetActivityTimer();
+
   Serial.println("[TOUCH169] Ready");
 }
 
 // ============== MAIN LOOP ==============
 void loop() {
   swarm.update();
-  updateClock();
-  updateCorners();
+  checkPowerButton();
+  checkBootButton();
+  updateChargingState();
+
+  // Handle boot button short press
+  if (bootBtnShortPress) {
+    bootBtnShortPress = false;
+
+    if (displayAsleep) {
+      // Wake up display on button press
+      displayWake();
+    } else {
+      // Toggle screens when awake
+      currentScreen = (currentScreen == SCREEN_CLOCK) ? SCREEN_DEBUG : SCREEN_CLOCK;
+      screenChanged = true;
+      resetActivityTimer();
+      Serial.printf("[TOUCH169] Switched to %s screen\n",
+                    currentScreen == SCREEN_CLOCK ? "clock" : "debug");
+    }
+  }
+
+  // Check for sleep timeout
+  if (!displayAsleep && (millis() - lastActivityTime >= DISPLAY_SLEEP_TIMEOUT_MS)) {
+    displaySleep();
+  }
+
+  // Only update display if awake
+  if (!displayAsleep) {
+    if (currentScreen == SCREEN_CLOCK) {
+      updateClock();
+      updateCorners();
+      drawChargingIndicator();
+    } else {
+      updateDebugScreen();
+    }
+  }
+}
+
+// ============== POWER MANAGEMENT ==============
+
+void powerOff() {
+  Serial.println("[TOUCH169] Powering off...");
+
+  // Show power off message
+  tft.fillScreen(COLOR_BG);
+  tft.setTextColor(COLOR_TEXT);
+  tft.setTextSize(2);
+  tft.setCursor(CENTER_X - 60, CENTER_Y - 10);
+  tft.print("Power Off");
+  delay(500);
+
+  // Turn off backlight
+  digitalWrite(TFT_BL, LOW);
+
+  // Release power latch - this will cut power on battery
+  digitalWrite(PWR_EN_PIN, LOW);
+
+  // If on USB power, we won't actually power off, so just wait
+  delay(2000);
+
+  // If still running (USB powered), restart instead
+  Serial.println("[TOUCH169] Still powered (USB?), restarting...");
+  ESP.restart();
+}
+
+void checkPowerButton() {
+  bool btnPressed = digitalRead(PWR_BTN_PIN) == LOW;  // Active low
+  unsigned long now = millis();
+
+  if (btnPressed && !pwrBtnWasPressed) {
+    // Button just pressed
+    pwrBtnPressTime = now;
+    pwrBtnWasPressed = true;
+  } else if (btnPressed && pwrBtnWasPressed) {
+    // Button held - check for long press to power off
+    if (now - pwrBtnPressTime >= PWR_BTN_LONG_PRESS_MS) {
+      powerOff();
+    }
+  } else if (!btnPressed && pwrBtnWasPressed) {
+    // Button released
+    pwrBtnWasPressed = false;
+  }
+}
+
+void checkBootButton() {
+  bool btnPressed = digitalRead(BOOT_BTN_PIN) == LOW;  // Active low (has pullup)
+  unsigned long now = millis();
+
+  if (btnPressed && !bootBtnWasPressed) {
+    // Button just pressed
+    bootBtnPressTime = now;
+    bootBtnWasPressed = true;
+  } else if (!btnPressed && bootBtnWasPressed) {
+    // Button released - check for valid press duration
+    unsigned long pressDuration = now - bootBtnPressTime;
+    if (pressDuration >= BOOT_BTN_DEBOUNCE_MS) {
+      bootBtnShortPress = true;
+    }
+    bootBtnWasPressed = false;
+  }
+}
+
+// ============== BATTERY FUNCTIONS ==============
+
+float readBatteryVoltage() {
+  int adcValue = analogRead(BAT_ADC_PIN);
+  float voltage = (float)adcValue * (BAT_VREF / 4095.0);
+  float actualVoltage = voltage * ((BAT_R1 + BAT_R2) / BAT_R2);
+  return actualVoltage;
+}
+
+int batteryPercent(float voltage) {
+  // LiPo voltage range: 3.0V (empty) to 4.2V (full)
+  // Linear approximation
+  if (voltage >= 4.2) return 100;
+  if (voltage <= 3.0) return 0;
+  return (int)((voltage - 3.0) / 1.2 * 100);
+}
+
+void updateChargingState() {
+  // Update voltage readings periodically
+  if (millis() - lastVoltageRead < VOLTAGE_READ_INTERVAL) return;
+  lastVoltageRead = millis();
+
+  float voltage = readBatteryVoltage();
+  voltageHistory[voltageHistoryIdx] = voltage;
+  voltageHistoryIdx = (voltageHistoryIdx + 1) % 5;
+
+  // Need at least 5 samples to determine trend
+  static int sampleCount = 0;
+  if (sampleCount < 5) {
+    sampleCount++;
+    return;
+  }
+
+  // Calculate average of first half vs second half to determine trend
+  float older = (voltageHistory[(voltageHistoryIdx + 0) % 5] +
+                 voltageHistory[(voltageHistoryIdx + 1) % 5]) / 2.0;
+  float newer = (voltageHistory[(voltageHistoryIdx + 3) % 5] +
+                 voltageHistory[(voltageHistoryIdx + 4) % 5]) / 2.0;
+  float trend = newer - older;
+
+  // Determine charging state
+  ChargingState newState;
+  if (voltage >= VOLTAGE_FULL_THRESHOLD && abs(trend) < VOLTAGE_TREND_THRESHOLD) {
+    newState = CHG_FULL;
+  } else if (trend > VOLTAGE_TREND_THRESHOLD) {
+    newState = CHG_CHARGING;
+  } else if (trend < -VOLTAGE_TREND_THRESHOLD) {
+    newState = CHG_DISCHARGING;
+  } else if (voltage >= VOLTAGE_FULL_THRESHOLD) {
+    newState = CHG_FULL;
+  } else {
+    // Stable voltage below full - likely on USB but not charging (trickle or full)
+    newState = (voltage > 4.0) ? CHG_FULL : CHG_DISCHARGING;
+  }
+
+  if (newState != chargingState) {
+    chargingState = newState;
+    Serial.printf("[TOUCH169] Charging state: %s (%.2fV, trend: %+.3fV)\n",
+                  getChargingStateStr(), voltage, trend);
+  }
+}
+
+const char* getChargingStateStr() {
+  switch (chargingState) {
+    case CHG_CHARGING:    return "Charging";
+    case CHG_FULL:        return "Full";
+    case CHG_DISCHARGING: return "Discharging";
+    default:              return "Unknown";
+  }
+}
+
+void drawChargingIndicator() {
+  // Only redraw when state changes
+  if (chargingState == prevChargingState) return;
+  prevChargingState = chargingState;
+
+  // Draw indicator in top-center area (below date)
+  int indicatorX = CENTER_X;
+  int indicatorY = 45;
+
+  // Clear previous indicator area
+  tft.fillRect(indicatorX - 20, indicatorY - 8, 40, 16, COLOR_BG);
+
+  if (chargingState == CHG_UNKNOWN) return;
+
+  // Draw battery outline
+  tft.drawRect(indicatorX - 12, indicatorY - 5, 20, 10, COLOR_TEXT);
+  tft.fillRect(indicatorX + 8, indicatorY - 2, 3, 4, COLOR_TEXT);
+
+  // Fill based on state
+  uint16_t fillColor;
+  int fillWidth;
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercent(voltage);
+  fillWidth = (percent * 16) / 100;
+
+  switch (chargingState) {
+    case CHG_CHARGING:
+      fillColor = COLOR_HUMID;  // Green when charging
+      // Draw lightning bolt symbol
+      tft.setTextColor(COLOR_HUMID, COLOR_BG);
+      tft.setTextSize(1);
+      tft.setCursor(indicatorX - 18, indicatorY - 4);
+      tft.print("+");
+      break;
+    case CHG_FULL:
+      fillColor = COLOR_HUMID;  // Green when full
+      break;
+    case CHG_DISCHARGING:
+      fillColor = (percent > 20) ? COLOR_TEXT : COLOR_SECOND;  // White or red when low
+      break;
+    default:
+      fillColor = COLOR_TICK;
+      break;
+  }
+
+  tft.fillRect(indicatorX - 10, indicatorY - 3, fillWidth, 6, fillColor);
+}
+
+// ============== DEBUG SCREEN ==============
+
+void drawDebugScreen() {
+  tft.fillScreen(COLOR_BG);
+  tft.setTextColor(COLOR_TEXT);
+  tft.setTextSize(2);
+  tft.setCursor(60, 10);
+  tft.print("DEBUG INFO");
+
+  tft.drawLine(10, 35, 230, 35, COLOR_TICK);
+}
+
+void updateDebugScreen() {
+  static unsigned long lastUpdate = 0;
+  static float lastVoltage = 0;
+
+  if (screenChanged) {
+    screenChanged = false;
+    drawDebugScreen();
+    lastUpdate = 0;  // Force immediate update
+    lastVoltage = 0;
+  }
+
+  // Update every 500ms
+  if (millis() - lastUpdate < 500) return;
+  lastUpdate = millis();
+
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercent(voltage);
+
+  tft.setTextSize(2);
+
+  // Battery section
+  tft.fillRect(10, 45, 220, 55, COLOR_BG);
+  tft.setTextColor(COLOR_HUMID);
+  tft.setCursor(10, 45);
+  tft.print("Battery:");
+  tft.setTextColor(COLOR_TEXT);
+  tft.setCursor(10, 65);
+  tft.printf("%.2fV  %d%%", voltage, percent);
+
+  // Show charging state
+  tft.setCursor(120, 65);
+  switch (chargingState) {
+    case CHG_CHARGING:
+      tft.setTextColor(COLOR_HUMID);
+      tft.print("[CHARGING]");
+      break;
+    case CHG_FULL:
+      tft.setTextColor(COLOR_HUMID);
+      tft.print("[FULL]");
+      break;
+    case CHG_DISCHARGING:
+      tft.setTextColor(COLOR_TEXT);
+      tft.print("[ON BAT]");
+      break;
+    default:
+      tft.setTextColor(COLOR_TICK);
+      tft.print("[...]");
+      break;
+  }
+
+  // Draw battery bar
+  int barWidth = (percent * 180) / 100;
+  uint16_t barColor = (chargingState == CHG_CHARGING || chargingState == CHG_FULL)
+                      ? COLOR_HUMID : (percent > 20 ? COLOR_TEXT : COLOR_SECOND);
+  tft.drawRect(10, 90, 184, 12, COLOR_TICK);
+  tft.fillRect(12, 92, barWidth, 8, barColor);
+  tft.fillRect(194, 94, 4, 4, COLOR_TICK);  // Battery nub
+
+  // Mesh info
+  tft.fillRect(10, 110, 220, 80, COLOR_BG);
+  tft.setTextColor(COLOR_TEMP);
+  tft.setCursor(10, 110);
+  tft.print("Mesh:");
+  tft.setTextColor(COLOR_TEXT);
+  tft.setTextSize(1);
+  tft.setCursor(10, 130);
+  tft.printf("Node ID: %u", swarm.getNodeId());
+  tft.setCursor(10, 145);
+  tft.printf("Peers: %d", swarm.getPeerCount());
+  tft.setCursor(10, 160);
+  tft.printf("Role: %s", swarm.isCoordinator() ? "Coordinator" : "Member");
+  tft.setCursor(10, 175);
+  tft.printf("Uptime: %lus", millis() / 1000);
+
+  // Sensor data section
+  tft.setTextSize(2);
+  tft.fillRect(10, 195, 220, 80, COLOR_BG);
+  tft.setTextColor(COLOR_LIGHT);
+  tft.setCursor(10, 195);
+  tft.print("Sensors:");
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_TEXT);
+  tft.setCursor(10, 215);
+  tft.printf("Temp: %s C", meshTemp.c_str());
+  tft.setCursor(10, 230);
+  tft.printf("Humidity: %s %%", meshHumid.c_str());
+  tft.setCursor(10, 245);
+  tft.printf("Light: %s", meshLight.c_str());
+  tft.setCursor(10, 260);
+  tft.printf("Motion: %s  LED: %s", meshMotion.c_str(), meshLed.c_str());
 }
 
 // ============== CLOCK FUNCTIONS ==============
@@ -540,4 +940,37 @@ bool getMeshTime(struct tm* timeinfo) {
     return true;
   }
   return false;
+}
+
+// ============== DISPLAY SLEEP FUNCTIONS ==============
+
+void resetActivityTimer() {
+  lastActivityTime = millis();
+}
+
+void displaySleep() {
+  if (displayAsleep) return;
+
+  displayAsleep = true;
+  Serial.println("[TOUCH169] Display sleeping...");
+
+  // Turn off backlight to save power
+  digitalWrite(TFT_BL, LOW);
+}
+
+void displayWake() {
+  if (!displayAsleep) return;
+
+  displayAsleep = false;
+  Serial.println("[TOUCH169] Display waking...");
+
+  // Turn on backlight
+  digitalWrite(TFT_BL, HIGH);
+
+  // Force screen redraw
+  screenChanged = true;
+  prevChargingState = CHG_UNKNOWN;  // Force battery indicator redraw
+
+  // Reset activity timer
+  resetActivityTimer();
 }

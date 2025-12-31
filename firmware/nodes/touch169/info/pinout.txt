@@ -32,7 +32,28 @@ USB_D-      GPIO19    USB data negative
 
 Power (version dependent)
 -------------------------
-SYS_EN      GPIO41    System enable (new) / GPIO35 (old)
-SYS_OUT     GPIO40    System output (new) / GPIO36 (old)
+SYS_EN      GPIO41    System enable/power latch (new) / GPIO35 (old)
+SYS_OUT     GPIO40    Power button input (new) / GPIO36 (old)
 BUZZER      GPIO42    Buzzer (new) / GPIO33 (old)
 RTC_INT     GPIO39    RTC interrupt (new) / GPIO41 (old)
+
+Battery Monitoring
+------------------
+BAT_ADC     GPIO1     Battery voltage (via voltage divider)
+                      R1=200k, R2=100k, measures 0-9.9V range
+                      LiPo: 3.0V (empty) to 4.2V (full)
+
+Charging
+--------
+Charging IC: ETA6098 high-performance Lithium battery charger
+- No dedicated STAT pin exposed to GPIO
+- Charging status inferred from voltage trend:
+  - Rising voltage = Charging
+  - Stable ~4.2V = Full
+  - Falling voltage = Discharging
+
+Display Sleep
+-------------
+- Display sleeps after 30 seconds of inactivity
+- Wake on boot button (GPIO0) press
+- Sleep turns off backlight only (mesh still active)
