@@ -453,6 +453,90 @@ namespace BoardConfig {
 
 ---
 
+## Future Refactoring Considerations
+
+### Button Input for ScreenRenderer
+
+Extend `ScreenRenderer` to handle button events in addition to touch. The touch169 has three buttons:
+
+| Button | GPIO | Notes |
+|--------|------|-------|
+| PWR | GPIO3 | Power on/off, active high |
+| BOOT | GPIO0 | Built-in, active low with pullup |
+| RST | - | Hardware reset, not software accessible |
+
+**Button Event Types:**
+- Short press (< 500ms)
+- Long press (> 2s)
+- Double tap (two presses within 300ms)
+
+**Proposed Interface Extension:**
+
+```cpp
+enum class ButtonId { BOOT, POWER };
+enum class ButtonEvent { SHORT_PRESS, LONG_PRESS, DOUBLE_TAP };
+
+class ScreenRenderer {
+public:
+  virtual void render(TFT_eSPI& tft, bool forceRedraw) = 0;
+  virtual void handleTouch(int16_t x, int16_t y, Navigator& nav) = 0;
+  virtual void handleButton(ButtonId btn, ButtonEvent event, Navigator& nav) {}  // Optional
+  virtual Screen getScreen() const = 0;
+};
+```
+
+**ButtonInput Class:**
+
+```cpp
+class ButtonInput {
+public:
+  ButtonInput(int pin, bool activeLow = true);
+
+  void update();  // Call in loop
+
+  bool isShortPress();
+  bool isLongPress();
+  bool isDoubleTap();
+
+  void onShortPress(std::function<void()> cb);
+  void onLongPress(std::function<void()> cb);
+  void onDoubleTap(std::function<void()> cb);
+
+private:
+  int _pin;
+  bool _activeLow;
+  unsigned long _pressTime;
+  unsigned long _lastReleaseTime;
+  int _tapCount;
+  // ... state machine for detection
+};
+```
+
+**Integration with InputManager:**
+
+```cpp
+class InputManager {
+public:
+  InputManager(TouchInput& touch, ButtonInput& bootBtn, ButtonInput& pwrBtn);
+
+  void update();
+
+  void onTap(TouchCallback cb);
+  void onSwipe(GestureCallback cb);
+  void onButton(ButtonId btn, ButtonEvent event, ButtonCallback cb);
+
+private:
+  TouchInput& _touch;
+  ButtonInput& _bootBtn;
+  ButtonInput& _pwrBtn;
+  GestureDetector _gesture;
+};
+```
+
+This allows screens to optionally handle button events (e.g., stopwatch START/STOP on boot button) while keeping default behavior in the main navigation controller.
+
+---
+
 ## Next Steps
 
 1. Review and discuss this plan
