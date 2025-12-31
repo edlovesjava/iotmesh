@@ -40,9 +40,6 @@
 #include <Wire.h>
 // Preferences included via SettingsManager.h
 
-// CST816T Touch Controller from SensorLib
-#include "touch/TouchClassCST816.h"
-
 // Board configuration (pins, colors, geometry, timing)
 #include "BoardConfig.h"
 
@@ -55,11 +52,12 @@
 #include "MeshSwarmAdapter.h"
 #include "DisplayManager.h"
 #include "PowerManager.h"
+#include "TouchInput.h"
+#include "InputManager.h"
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 TFT_eSPI tft = TFT_eSPI();
-TouchClassCST816 touch;
 SettingsManager settings;
 Battery battery;
 TimeSource timeSource;
@@ -68,13 +66,12 @@ GestureDetector gesture(SWIPE_MIN_DISTANCE, SWIPE_MAX_CROSS);
 MeshSwarmAdapter meshState(swarm);
 DisplayManager display(tft, navigator, TFT_BL);
 PowerManager power;
+TouchInput touchInput;
+InputManager input(touchInput, gesture);
 
-// Touch state
-bool touchInitialized = false;
+// Touch state (used by processTouchZones)
 int16_t touchX = -1;
 int16_t touchY = -1;
-bool touchPressed = false;
-unsigned long lastTouchTime = 0;
 
 // Previous sensor values for efficient redraw
 String prevTemp = "";
@@ -100,13 +97,7 @@ bool batteryIndicatorDirty = true;
 bool firstDraw = true;
 
 // Power button state managed by PowerManager
-
-// Boot button state (short press = back, long press = debug per spec)
-unsigned long bootBtnPressTime = 0;
-bool bootBtnWasPressed = false;
-bool bootBtnShortPress = false;
-bool bootBtnLongPress = false;
-
+// Boot button state managed by InputManager
 // Display sleep state managed by DisplayManager
 
 // ============== FUNCTION DECLARATIONS ==============
@@ -116,13 +107,17 @@ void eraseHand(float angle, int length, int width);
 void updateClock();
 void updateCorners();
 void drawCornerLabels();
-void checkBootButton();
 void onPowerOff();            // Power off callback for PowerManager
 void drawBatteryIndicator();  // Uses Battery class
 void drawDebugScreen();
 void updateDebugScreen();
-bool initTouch();
-void handleTouch();
+
+// Input callbacks
+void onTap(int16_t x, int16_t y);
+void onSwipe(SwipeDirection dir);
+void onTouch();
+void onBootShortPress();
+void onBootLongPress();
 
 // Fallback rendering for screens not yet migrated to ScreenRenderer
 void fallbackRender(Screen screen, TFT_eSPI& tft, Navigator& nav);
@@ -135,9 +130,6 @@ void processTouchZones();
 void setup() {
   // CRITICAL: Initialize power management FIRST to latch power on battery
   power.begin();
-
-  // Setup boot button (GPIO0) with internal pullup
-  pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
 
   Serial.begin(115200);
   delay(1000);
@@ -158,11 +150,11 @@ void setup() {
 
   Serial.println("[TOUCH169] Display initialized");
 
-  // POC-1: Initialize touch controller
-  if (initTouch()) {
-    Serial.println("[TOUCH169] Touch controller initialized (POC-1 PASS)");
+  // Initialize touch controller
+  if (touchInput.begin(Wire)) {
+    Serial.println("[TOUCH169] Touch controller initialized");
   } else {
-    Serial.println("[TOUCH169] Touch controller FAILED (POC-1 FAIL)");
+    Serial.println("[TOUCH169] Touch controller FAILED");
   }
 
   // Initialize settings manager (loads from flash, increments boot count)
@@ -200,6 +192,15 @@ void setup() {
   power.onPowerOff(onPowerOff);
   Serial.println("[TOUCH169] PowerManager callback set");
 
+  // Initialize input manager with callbacks
+  input.onTap(onTap);
+  input.onSwipe(onSwipe);
+  input.onTouch(onTouch);
+  input.onBootShortPress(onBootShortPress);
+  input.onBootLongPress(onBootLongPress);
+  input.begin();
+  Serial.println("[TOUCH169] InputManager initialized");
+
   // Clear startup message and draw clock
   delay(500);
   tft.fillScreen(COLOR_BG);
@@ -212,24 +213,9 @@ void setup() {
 // ============== MAIN LOOP ==============
 void loop() {
   swarm.update();
-  power.update();  // Check power button (long press = power off)
-  checkBootButton();
+  power.update();    // Check power button (long press = power off)
   battery.update();  // Update battery monitoring
-  handleTouch();  // POC-1: Handle touch input
-
-  // Handle boot button - short press = back, long press = debug (per spec)
-  if (bootBtnShortPress) {
-    bootBtnShortPress = false;
-
-    if (display.isAsleep()) {
-      // Wake up display on button press
-      display.wake();
-    } else {
-      // Short press = navigate back (per spec section 3)
-      navigator.navigateBack();
-      display.resetActivityTimer();
-    }
-  }
+  input.update();    // Handle touch and boot button
 
   // Check for sleep timeout
   display.checkSleepTimeout();
@@ -252,37 +238,6 @@ void onPowerOff() {
 
   // Turn off backlight
   digitalWrite(TFT_BL, LOW);
-}
-
-void checkBootButton() {
-  bool btnPressed = digitalRead(BOOT_BTN_PIN) == LOW;  // Active low (has pullup)
-  unsigned long now = millis();
-
-  if (btnPressed && !bootBtnWasPressed) {
-    // Button just pressed
-    bootBtnPressTime = now;
-    bootBtnWasPressed = true;
-    bootBtnLongPress = false;
-  } else if (btnPressed && bootBtnWasPressed && !bootBtnLongPress) {
-    // Button held - check for long press (debug screen per spec)
-    if (now - bootBtnPressTime >= BOOT_BTN_LONG_PRESS_MS) {
-      bootBtnLongPress = true;
-      // Navigate to debug on long press
-      if (!display.isAsleep()) {
-        navigator.navigateTo(Screen::Debug);
-        display.resetActivityTimer();
-        Serial.println("[TOUCH169] Long press -> Debug screen");
-      }
-    }
-  } else if (!btnPressed && bootBtnWasPressed) {
-    // Button released - check for short press (only if not long press)
-    unsigned long pressDuration = now - bootBtnPressTime;
-    if (!bootBtnLongPress && pressDuration >= BOOT_BTN_DEBOUNCE_MS) {
-      bootBtnShortPress = true;
-    }
-    bootBtnWasPressed = false;
-    bootBtnLongPress = false;
-  }
 }
 
 // ============== BATTERY FUNCTIONS ==============
@@ -729,101 +684,62 @@ void updateCorners() {
   }
 }
 
-// ============== TOUCH FUNCTIONS (POC-1) ==============
+// ============== INPUT CALLBACKS ==============
 
-bool initTouch() {
-  // CST816T touch controller at I2C address 0x15
-  // Using SensorLib's TouchClassCST816 driver
-  if (!touch.begin(Wire, 0x15, TOUCH_SDA, TOUCH_SCL)) {
-    Serial.println("[TOUCH169] CST816T not found at 0x15");
-    return false;
-  }
-
-  // Get model name for verification
-  Serial.printf("[TOUCH169] Touch model: %s\n", touch.getModelName());
-
-  touchInitialized = true;
-  return true;
+void onTap(int16_t x, int16_t y) {
+  touchX = x;
+  touchY = y;
+  processTouchZones();
 }
 
-void handleTouch() {
-  if (!touchInitialized) return;
-
-  // Check for touch events
-  // getPoint returns number of touch points, fills x_array and y_array
-  uint8_t touched = touch.getPoint(&touchX, &touchY, 1);
-
-  if (touched > 0) {
-    unsigned long now = millis();
-
-    // Wake display on touch (before debounce to feel responsive)
-    if (display.isAsleep()) {
-      display.wake();
-      Serial.println("[TOUCH169] Touch wake");
-      gesture.reset();  // Reset gesture tracking
-      return;  // Don't process touch action when waking
-    }
-
-    // Track touch start for gesture detection
-    if (!gesture.isActive()) {
-      gesture.onTouchStart(touchX, touchY);
-      Serial.printf("[TOUCH169] Touch start x=%d, y=%d\n", touchX, touchY);
-    }
-
-    // Debounce for tap processing (swipe uses start/end)
-    if (now - lastTouchTime < TOUCH_DEBOUNCE_MS) return;
-    lastTouchTime = now;
-
-    // Ignore touches during cooldown after screen transition
-    if (now - navigator.getTransitionTime() < TOUCH_COOLDOWN_MS) {
-      Serial.printf("[TOUCH169] Touch ignored (cooldown) x=%d, y=%d\n", touchX, touchY);
-      return;
-    }
-
-    // Reset activity timer on any touch
-    display.resetActivityTimer();
-
-    touchPressed = true;
-  } else {
-    // Touch released - detect gesture
-    if (gesture.isActive()) {
-      gesture.onTouchEnd(touchX, touchY);
-      Gesture g = gesture.getGesture();
-
-      Serial.printf("[TOUCH169] Gesture: %s\n", GestureDetector::getGestureName(g));
-
-      switch (g) {
-        case Gesture::SwipeDown:
-          // Swipe down on clock screen opens nav menu
-          if (navigator.current() == Screen::Clock) {
-            navigator.navigateTo(Screen::NavMenu);
-            display.resetActivityTimer();
-          }
-          break;
-
-        case Gesture::SwipeUp:
-          // Swipe up on nav menu closes it
-          if (navigator.current() == Screen::NavMenu) {
-            navigator.navigateBack();
-            display.resetActivityTimer();
-          }
-          break;
-
-        case Gesture::Tap:
-          // Process tap at start position (more accurate)
-          touchX = gesture.getTapX();
-          touchY = gesture.getTapY();
-          processTouchZones();
-          break;
-
-        default:
-          // SwipeLeft, SwipeRight, None - not used yet
-          break;
+void onSwipe(SwipeDirection dir) {
+  switch (dir) {
+    case SwipeDirection::Down:
+      // Swipe down on clock screen opens nav menu
+      if (navigator.current() == Screen::Clock) {
+        navigator.navigateTo(Screen::NavMenu);
+        display.resetActivityTimer();
       }
+      break;
 
-      gesture.reset();
-    }
-    touchPressed = false;
+    case SwipeDirection::Up:
+      // Swipe up on nav menu closes it
+      if (navigator.current() == Screen::NavMenu) {
+        navigator.navigateBack();
+        display.resetActivityTimer();
+      }
+      break;
+
+    default:
+      // SwipeLeft, SwipeRight - not used yet
+      break;
+  }
+}
+
+void onTouch() {
+  // Wake display on any touch
+  if (display.isAsleep()) {
+    display.wake();
+    input.cancelTouch();  // Don't process gesture when waking
+    Serial.println("[TOUCH169] Touch wake");
+    return;
+  }
+  display.resetActivityTimer();
+}
+
+void onBootShortPress() {
+  if (display.isAsleep()) {
+    display.wake();
+  } else {
+    navigator.navigateBack();
+    display.resetActivityTimer();
+  }
+}
+
+void onBootLongPress() {
+  if (!display.isAsleep()) {
+    navigator.navigateTo(Screen::Debug);
+    display.resetActivityTimer();
   }
 }
 

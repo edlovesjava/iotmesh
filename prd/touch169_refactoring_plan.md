@@ -588,11 +588,12 @@ firmware/nodes/touch169/
 - **Risk:** Medium (power state coordination)
 - **Status:** Created `PowerManager.h/.cpp`. Handles power latch on startup, power button long-press for power off. Uses callback pattern for power off UI (shows message, turns off backlight). main.cpp uses `power.begin()` (called FIRST in setup), `power.update()` in loop, `power.onPowerOff()` for callback
 
-### Phase R10: Extract TouchInput + InputManager
+### Phase R10: Extract TouchInput + InputManager ✅ COMPLETED
 - Create `TouchInput` wrapper class
 - Create `InputManager` combining touch + gesture detection
 - **Dependency:** R5 (GestureDetector)
 - **Risk:** Low
+- **Status:** Created `TouchInput.h/.cpp` (CST816T wrapper) and `InputManager.h/.cpp` (unified touch/button handling). Uses callback pattern for tap, swipe, touch, and boot button events. main.cpp defines `onTap()`, `onSwipe()`, `onTouch()`, `onBootShortPress()`, `onBootLongPress()` callbacks
 
 ### Phase R11: Add IMU
 - Create `IMU` class for QMI8658
@@ -1468,9 +1469,9 @@ This section documents issues identified during critical review and how they wer
 
 ## Progress Summary
 
-**Completed:** Phases R1-R9 (BoardConfig, Battery, TimeSource, Navigator, GestureDetector, SettingsManager, IMeshState, DisplayManager, PowerManager)
+**Completed:** Phases R1-R10 (BoardConfig, Battery, TimeSource, Navigator, GestureDetector, SettingsManager, IMeshState, DisplayManager, PowerManager, InputManager)
 **In Progress:** None
-**Next:** Phase R10 (TouchInput + InputManager)
+**Next:** Phase R11 (IMU) or migrate screens to ScreenRenderer
 
 **Files Created:**
 - `firmware/nodes/touch169/BoardConfig.h` - Pin definitions, colors, timing constants
@@ -1484,11 +1485,13 @@ This section documents issues identified during critical review and how they wer
 - `firmware/nodes/touch169/ScreenRenderer.h` - Abstract base class for screen rendering
 - `firmware/nodes/touch169/DisplayManager.h/.cpp` - Screen routing, sleep/wake, activity timeout
 - `firmware/nodes/touch169/PowerManager.h/.cpp` - Power latch, power button handling, power-off
+- `firmware/nodes/touch169/TouchInput.h/.cpp` - CST816T touch controller wrapper
+- `firmware/nodes/touch169/InputManager.h/.cpp` - Unified touch/button input with callbacks
 
-**main.cpp:** Reduced from ~1400 to ~950 lines
+**main.cpp:** Reduced from ~1400 to ~850 lines
 
 ## Next Steps
 
-1. Phase R10 (TouchInput + InputManager) - touch/button abstraction
+1. Phase R11 (IMU) - QMI8658 accelerometer/gyroscope
 2. Future: Migrate individual screens to ScreenRenderer subclasses
 

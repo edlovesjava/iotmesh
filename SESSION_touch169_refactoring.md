@@ -72,13 +72,22 @@ Refactoring the touch169 node from a monolithic main.cpp into modular classes fo
 - main.cpp uses `power.begin()` (called FIRST in setup), `power.update()` in loop
 - Power off callback via `power.onPowerOff(onPowerOff)`
 
+### Phase R10: TouchInput + InputManager ✅
+- Created `firmware/nodes/touch169/TouchInput.h` and `TouchInput.cpp`
+- Created `firmware/nodes/touch169/InputManager.h` and `InputManager.cpp`
+- TouchInput wraps CST816T touch controller
+- InputManager combines touch, gesture, and boot button handling
+- Uses callback pattern: onTap, onSwipe, onTouch, onBootShortPress, onBootLongPress
+- main.cpp defines callbacks that handle navigation and wake behavior
+- cancelTouch() method to prevent gesture when waking from sleep
+
 ## Remaining Phases
 
-### Phase R10: TouchInput + InputManager (pending)
-- Touch/button abstraction
+### Phase R11: IMU (pending)
+- QMI8658 accelerometer/gyroscope support
 
 ## Files Modified
-- `firmware/nodes/touch169/main.cpp` - reduced from ~1400 to ~950 lines
+- `firmware/nodes/touch169/main.cpp` - reduced from ~1400 to ~850 lines
 - `firmware/nodes/touch169/BoardConfig.h` - NEW
 - `firmware/nodes/touch169/Battery.h/.cpp` - NEW
 - `firmware/nodes/touch169/TimeSource.h/.cpp` - NEW
@@ -90,6 +99,8 @@ Refactoring the touch169 node from a monolithic main.cpp into modular classes fo
 - `firmware/nodes/touch169/ScreenRenderer.h` - NEW
 - `firmware/nodes/touch169/DisplayManager.h/.cpp` - NEW
 - `firmware/nodes/touch169/PowerManager.h/.cpp` - NEW
+- `firmware/nodes/touch169/TouchInput.h/.cpp` - NEW
+- `firmware/nodes/touch169/InputManager.h/.cpp` - NEW
 - `firmware/platformio.ini` - cleaned up (removed failed Unity test setup)
 
 ## Build Status
@@ -111,7 +122,7 @@ Attempted to set up Unity test framework for native platform testing but hit iss
 ## To Resume
 1. Read this session file
 2. Read `prd/touch169_refactoring_plan.md` for full context
-3. Continue with Phase R10 (TouchInput + InputManager) or any remaining phase
+3. Continue with Phase R11 (IMU) or migrate screens to ScreenRenderer
 4. Run `pio run -e touch169` to verify builds work
 
 ## Related Files
