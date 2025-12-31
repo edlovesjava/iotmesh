@@ -43,95 +43,20 @@
 // CST816T Touch Controller from SensorLib
 #include "touch/TouchClassCST816.h"
 
-// ============== BUILD-TIME CONFIGURATION ==============
-#ifndef NODE_NAME
-#define NODE_NAME "Touch169"
-#endif
+// Board configuration (pins, colors, geometry, timing)
+#include "BoardConfig.h"
 
-#ifndef NODE_TYPE
-#define NODE_TYPE "touch169"
-#endif
-
-// ============== TIMEZONE CONFIG ==============
-#ifndef GMT_OFFSET_SEC
-#define GMT_OFFSET_SEC  -18000  // EST = UTC-5
-#endif
-
-#ifndef DAYLIGHT_OFFSET
-#define DAYLIGHT_OFFSET 3600    // 1 hour daylight saving
-#endif
-
-// ============== DISPLAY PINS (configured in platformio.ini) ==============
-#ifndef TFT_BL
-#define TFT_BL 15
-#endif
-
-// ============== POWER CONTROL PINS ==============
-// Waveshare board has power latch circuit - must hold HIGH to stay powered on battery
-// Old version: GPIO35/36, New version: GPIO41/40
-#ifndef USE_NEW_PIN_CONFIG
-#define USE_NEW_PIN_CONFIG 0  // Set to 1 for newer board revisions
-#endif
-
-#if USE_NEW_PIN_CONFIG
-#define PWR_EN_PIN    41      // Power latch output (new boards)
-#define PWR_BTN_PIN   40      // Power button input (new boards)
-#else
-#define PWR_EN_PIN    35      // Power latch output (old boards)
-#define PWR_BTN_PIN   36      // Power button input (old boards)
-#endif
-
-// ============== BATTERY MONITORING ==============
-#define BAT_ADC_PIN   1       // GPIO1 - battery voltage via divider
-#define BAT_R1        200000.0  // 200k ohm
-#define BAT_R2        100000.0  // 100k ohm
-#define BAT_VREF      3.3       // ADC reference voltage
-
-// ============== BOOT BUTTON (center button for screen toggle) ==============
-#define BOOT_BTN_PIN  0       // GPIO0 - boot button
-
-// ============== DISPLAY GEOMETRY ==============
-#define SCREEN_WIDTH    240
-#define SCREEN_HEIGHT   280
-#define CENTER_X        120
-#define CENTER_Y        140      // Center of display
-#define CLOCK_RADIUS    80       // Clock face radius
-#define HOUR_HAND_LEN   40
-#define MIN_HAND_LEN    55
-#define SEC_HAND_LEN    65
-
-// Corner positions for sensor data
-#define CORNER_MARGIN   8
-#define CORNER_TEXT_H   16
-
-// ============== DISPLAY COLORS (RGB565) ==============
-#define COLOR_BG        0x0000  // Black
-#define COLOR_FACE      0x2104  // Dark gray
-#define COLOR_HOUR      0xFFFF  // White
-#define COLOR_MINUTE    0xFFFF  // White
-#define COLOR_SECOND    0xF800  // Red
-#define COLOR_TEXT      0xFFFF  // White
-#define COLOR_TEMP      0xFD20  // Orange
-#define COLOR_HUMID     0x07E0  // Green
-#define COLOR_LIGHT     0xFFE0  // Yellow
-#define COLOR_MOTION    0x07FF  // Cyan
-#define COLOR_LED       0xF81F  // Magenta
-#define COLOR_TICK      0x8410  // Gray
-#define COLOR_DATE      0xAD55  // Light gray
-
-// ============== I2C PINS FOR TOUCH ==============
-#ifndef TOUCH_SDA
-#define TOUCH_SDA 11
-#endif
-#ifndef TOUCH_SCL
-#define TOUCH_SCL 10
-#endif
+// Extracted classes
+#include "Battery.h"
+#include "TimeSource.h"
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 TFT_eSPI tft = TFT_eSPI();
 TouchClassCST816 touch;
 Preferences preferences;
+Battery battery;
+TimeSource timeSource;
 
 // Touch state
 bool touchInitialized = false;
@@ -140,15 +65,11 @@ int16_t touchY = -1;
 bool touchPressed = false;
 unsigned long lastTouchTime = 0;
 unsigned long screenTransitionTime = 0;  // When last screen change occurred
-#define TOUCH_DEBOUNCE_MS 100  // Debounce touch events
-#define TOUCH_COOLDOWN_MS 300  // Ignore touches after screen transition
 
 // Swipe gesture detection
 int16_t touchStartX = -1;
 int16_t touchStartY = -1;
 bool touchActive = false;
-#define SWIPE_MIN_DISTANCE 50   // Minimum pixels to count as swipe
-#define SWIPE_MAX_CROSS 40      // Max perpendicular movement for swipe
 
 // Sensor data from mesh
 String meshTemp = "--";
@@ -169,28 +90,14 @@ String prevLed = "";
 int lastSec = -1;
 int lastMin = -1;
 int lastHour = -1;
-bool timeValid = false;
-
-// Mesh-based time
-unsigned long meshTimeBase = 0;
-unsigned long meshTimeMillis = 0;
-bool hasMeshTime = false;
 
 // Previous hand positions for efficient redraw
 float prevSecAngle = -999;
 float prevMinAngle = -999;
 float prevHourAngle = -999;
 
-// Battery/charging state
-float voltageHistory[5] = {0, 0, 0, 0, 0};  // Last 5 voltage readings
-int voltageHistoryIdx = 0;
-unsigned long lastVoltageRead = 0;
-enum ChargingState { CHG_UNKNOWN, CHG_CHARGING, CHG_FULL, CHG_DISCHARGING };
-ChargingState chargingState = CHG_UNKNOWN;
-ChargingState prevChargingState = CHG_UNKNOWN;
-#define VOLTAGE_READ_INTERVAL 2000  // Read voltage every 2 seconds
-#define VOLTAGE_FULL_THRESHOLD 4.15  // Consider full above this
-#define VOLTAGE_TREND_THRESHOLD 0.02  // Min voltage change to detect trend
+// Battery indicator state (for redraw optimization)
+bool batteryIndicatorDirty = true;
 
 // ============== SCREEN MODE ENUM (Phase 1.1) ==============
 // From touch169_touch_navigation_spec.md Section 6
@@ -223,20 +130,16 @@ bool firstDraw = true;
 // Power button state (long press to power off)
 unsigned long pwrBtnPressTime = 0;
 bool pwrBtnWasPressed = false;
-#define PWR_BTN_LONG_PRESS_MS 2000  // Hold 2 seconds to power off
 
 // Boot button state (short press = back, long press = debug per spec)
 unsigned long bootBtnPressTime = 0;
 bool bootBtnWasPressed = false;
 bool bootBtnShortPress = false;
 bool bootBtnLongPress = false;
-#define BOOT_BTN_DEBOUNCE_MS  50
-#define BOOT_BTN_LONG_PRESS_MS 2000  // 2 seconds for debug screen
 
 // Display sleep state
 bool displayAsleep = false;
 unsigned long lastActivityTime = 0;
-#define DISPLAY_SLEEP_TIMEOUT_MS  30000  // 30 seconds to sleep
 
 // ============== FUNCTION DECLARATIONS ==============
 void drawClockFace();
@@ -245,16 +148,10 @@ void eraseHand(float angle, int length, int width);
 void updateClock();
 void updateCorners();
 void drawCornerLabels();
-void setMeshTime(unsigned long unixTime);
-bool getMeshTime(struct tm* timeinfo);
 void checkPowerButton();
 void checkBootButton();
 void powerOff();
-float readBatteryVoltage();
-int batteryPercent(float voltage);
-void updateChargingState();
-const char* getChargingStateStr();
-void drawChargingIndicator();
+void drawBatteryIndicator();  // Uses Battery class
 void drawDebugScreen();
 void updateDebugScreen();
 void displaySleep();
@@ -359,7 +256,7 @@ void setup() {
   swarm.watchState("time", [](const String& key, const String& value, const String& oldValue) {
     unsigned long unixTime = value.toInt();
     if (unixTime > 1700000000) {
-      setMeshTime(unixTime);
+      timeSource.setMeshTime(unixTime);
       Serial.printf("[TOUCH169] Time synced: %lu\n", unixTime);
     }
   });
@@ -383,6 +280,10 @@ void setup() {
     }
   });
 
+  // Initialize battery monitoring
+  battery.begin();
+  Serial.println("[TOUCH169] Battery monitoring initialized");
+
   // Clear startup message and draw clock
   delay(500);
   tft.fillScreen(COLOR_BG);
@@ -400,7 +301,7 @@ void loop() {
   swarm.update();
   checkPowerButton();
   checkBootButton();
-  updateChargingState();
+  battery.update();  // Update battery monitoring
   handleTouch();  // POC-1: Handle touch input
 
   // Handle boot button - short press = back, long press = debug (per spec)
@@ -505,79 +406,12 @@ void checkBootButton() {
 
 // ============== BATTERY FUNCTIONS ==============
 
-float readBatteryVoltage() {
-  int adcValue = analogRead(BAT_ADC_PIN);
-  float voltage = (float)adcValue * (BAT_VREF / 4095.0);
-  float actualVoltage = voltage * ((BAT_R1 + BAT_R2) / BAT_R2);
-  return actualVoltage;
-}
-
-int batteryPercent(float voltage) {
-  // LiPo voltage range: 3.0V (empty) to 4.2V (full)
-  // Linear approximation
-  if (voltage >= 4.2) return 100;
-  if (voltage <= 3.0) return 0;
-  return (int)((voltage - 3.0) / 1.2 * 100);
-}
-
-void updateChargingState() {
-  // Update voltage readings periodically
-  if (millis() - lastVoltageRead < VOLTAGE_READ_INTERVAL) return;
-  lastVoltageRead = millis();
-
-  float voltage = readBatteryVoltage();
-  voltageHistory[voltageHistoryIdx] = voltage;
-  voltageHistoryIdx = (voltageHistoryIdx + 1) % 5;
-
-  // Need at least 5 samples to determine trend
-  static int sampleCount = 0;
-  if (sampleCount < 5) {
-    sampleCount++;
-    return;
-  }
-
-  // Calculate average of first half vs second half to determine trend
-  float older = (voltageHistory[(voltageHistoryIdx + 0) % 5] +
-                 voltageHistory[(voltageHistoryIdx + 1) % 5]) / 2.0;
-  float newer = (voltageHistory[(voltageHistoryIdx + 3) % 5] +
-                 voltageHistory[(voltageHistoryIdx + 4) % 5]) / 2.0;
-  float trend = newer - older;
-
-  // Determine charging state
-  ChargingState newState;
-  if (voltage >= VOLTAGE_FULL_THRESHOLD && abs(trend) < VOLTAGE_TREND_THRESHOLD) {
-    newState = CHG_FULL;
-  } else if (trend > VOLTAGE_TREND_THRESHOLD) {
-    newState = CHG_CHARGING;
-  } else if (trend < -VOLTAGE_TREND_THRESHOLD) {
-    newState = CHG_DISCHARGING;
-  } else if (voltage >= VOLTAGE_FULL_THRESHOLD) {
-    newState = CHG_FULL;
-  } else {
-    // Stable voltage below full - likely on USB but not charging (trickle or full)
-    newState = (voltage > 4.0) ? CHG_FULL : CHG_DISCHARGING;
-  }
-
-  if (newState != chargingState) {
-    chargingState = newState;
-    Serial.printf("[TOUCH169] Charging state: %s (%.2fV, trend: %+.3fV)\n",
-                  getChargingStateStr(), voltage, trend);
-  }
-}
-
-const char* getChargingStateStr() {
-  switch (chargingState) {
-    case CHG_CHARGING:    return "Charging";
-    case CHG_FULL:        return "Full";
-    case CHG_DISCHARGING: return "Discharging";
-    default:              return "Unknown";
-  }
-}
-
-void drawChargingIndicator() {
+void drawBatteryIndicator() {
   // Only redraw when state changes
-  if (chargingState == prevChargingState) return;
-  prevChargingState = chargingState;
+  if (!battery.stateChanged() && !batteryIndicatorDirty) return;
+  batteryIndicatorDirty = false;
+
+  ChargingState state = battery.getState();
 
   // Draw indicator in top-center area (below date)
   int indicatorX = CENTER_X;
@@ -586,7 +420,7 @@ void drawChargingIndicator() {
   // Clear previous indicator area
   tft.fillRect(indicatorX - 20, indicatorY - 8, 40, 16, COLOR_BG);
 
-  if (chargingState == CHG_UNKNOWN) return;
+  if (state == ChargingState::Unknown) return;
 
   // Draw battery outline
   tft.drawRect(indicatorX - 12, indicatorY - 5, 20, 10, COLOR_TEXT);
@@ -594,24 +428,22 @@ void drawChargingIndicator() {
 
   // Fill based on state
   uint16_t fillColor;
-  int fillWidth;
-  float voltage = readBatteryVoltage();
-  int percent = batteryPercent(voltage);
-  fillWidth = (percent * 16) / 100;
+  int percent = battery.getPercent();
+  int fillWidth = (percent * 16) / 100;
 
-  switch (chargingState) {
-    case CHG_CHARGING:
+  switch (state) {
+    case ChargingState::Charging:
       fillColor = COLOR_HUMID;  // Green when charging
-      // Draw lightning bolt symbol
+      // Draw plus symbol
       tft.setTextColor(COLOR_HUMID, COLOR_BG);
       tft.setTextSize(1);
       tft.setCursor(indicatorX - 18, indicatorY - 4);
       tft.print("+");
       break;
-    case CHG_FULL:
+    case ChargingState::Full:
       fillColor = COLOR_HUMID;  // Green when full
       break;
-    case CHG_DISCHARGING:
+    case ChargingState::Discharging:
       fillColor = (percent > 20) ? COLOR_TEXT : COLOR_SECOND;  // White or red when low
       break;
     default:
@@ -636,21 +468,20 @@ void drawDebugScreen() {
 
 void updateDebugScreen() {
   static unsigned long lastUpdate = 0;
-  static float lastVoltage = 0;
 
   if (screenChanged) {
     screenChanged = false;
     drawDebugScreen();
     lastUpdate = 0;  // Force immediate update
-    lastVoltage = 0;
   }
 
   // Update every 500ms
   if (millis() - lastUpdate < 500) return;
   lastUpdate = millis();
 
-  float voltage = readBatteryVoltage();
-  int percent = batteryPercent(voltage);
+  float voltage = battery.getVoltage();
+  int percent = battery.getPercent();
+  ChargingState state = battery.getState();
 
   tft.setTextSize(2);
 
@@ -665,16 +496,16 @@ void updateDebugScreen() {
 
   // Show charging state
   tft.setCursor(120, 65);
-  switch (chargingState) {
-    case CHG_CHARGING:
+  switch (state) {
+    case ChargingState::Charging:
       tft.setTextColor(COLOR_HUMID);
       tft.print("[CHARGING]");
       break;
-    case CHG_FULL:
+    case ChargingState::Full:
       tft.setTextColor(COLOR_HUMID);
       tft.print("[FULL]");
       break;
-    case CHG_DISCHARGING:
+    case ChargingState::Discharging:
       tft.setTextColor(COLOR_TEXT);
       tft.print("[ON BAT]");
       break;
@@ -686,7 +517,7 @@ void updateDebugScreen() {
 
   // Draw battery bar
   int barWidth = (percent * 180) / 100;
-  uint16_t barColor = (chargingState == CHG_CHARGING || chargingState == CHG_FULL)
+  uint16_t barColor = (state == ChargingState::Charging || state == ChargingState::Full)
                       ? COLOR_HUMID : (percent > 20 ? COLOR_TEXT : COLOR_SECOND);
   tft.drawRect(10, 90, 184, 12, COLOR_TICK);
   tft.fillRect(12, 92, barWidth, 8, barColor);
@@ -793,10 +624,10 @@ void updateClock() {
     firstDraw = true;
   }
 
-  // Try mesh time first, then NTP
-  if (!getMeshTime(&timeinfo) && !getLocalTime(&timeinfo)) {
+  // Try to get time from TimeSource
+  if (!timeSource.getTime(&timeinfo)) {
     // Time not yet synced - show waiting message
-    if (!timeValid) {
+    if (!timeSource.isValid()) {
       static unsigned long lastDot = 0;
       static int dots = 0;
       if (millis() - lastDot > 500) {
@@ -814,8 +645,8 @@ void updateClock() {
   }
 
   // Time is valid
-  if (!timeValid) {
-    timeValid = true;
+  if (!timeSource.isValid()) {
+    timeSource.markValid();
     tft.fillScreen(COLOR_BG);
     drawClockFace();
     drawCornerLabels();
@@ -996,36 +827,6 @@ void updateCorners() {
   }
 }
 
-// ============== MESH TIME FUNCTIONS ==============
-
-void setMeshTime(unsigned long unixTime) {
-  meshTimeBase = unixTime;
-  meshTimeMillis = millis();
-  hasMeshTime = true;
-
-  // Also set the system time so getLocalTime() works
-  struct timeval tv;
-  tv.tv_sec = unixTime;
-  tv.tv_usec = 0;
-  settimeofday(&tv, NULL);
-}
-
-bool getMeshTime(struct tm* timeinfo) {
-  if (!hasMeshTime) return false;
-
-  // Calculate current time based on mesh time + elapsed millis
-  unsigned long elapsed = (millis() - meshTimeMillis) / 1000;
-  time_t currentTime = meshTimeBase + elapsed + GMT_OFFSET_SEC + DAYLIGHT_OFFSET;
-
-  // Convert to struct tm
-  struct tm* t = localtime(&currentTime);
-  if (t) {
-    memcpy(timeinfo, t, sizeof(struct tm));
-    return true;
-  }
-  return false;
-}
-
 // ============== DISPLAY SLEEP FUNCTIONS ==============
 
 void resetActivityTimer() {
@@ -1053,7 +854,7 @@ void displayWake() {
 
   // Force screen redraw
   screenChanged = true;
-  prevChargingState = CHG_UNKNOWN;  // Force battery indicator redraw
+  batteryIndicatorDirty = true;  // Force battery indicator redraw
 
   // Reset activity timer
   resetActivityTimer();
@@ -1271,7 +1072,7 @@ void renderCurrentScreen() {
     case SCREEN_CLOCK:
       updateClock();
       updateCorners();
-      drawChargingIndicator();
+      drawBatteryIndicator();
       break;
 
     case SCREEN_DEBUG:
