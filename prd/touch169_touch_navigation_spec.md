@@ -1032,5 +1032,5 @@ Enable the touch169 to pair with a smartphone for portable mesh monitoring away 
 - [SensorLib CST816T example](https://github.com/lewishe/SensorLib/blob/main/examples/TouchDrv_CSTxxx_GetPoint/TouchDrv_CSTxxx_GetPoint.ino)
 - [Waveshare ESP32-S3-LCD-1.69 Pinout](../firmware/nodes/touch169/info/pinout.txt)
 <!--stackedit_data:
-eyJoaXN0b3J5IjpbNjU2MzY5MTkzXX0=
+eyJoaXN0b3J5IjpbLTIxNDE4OTY4MzMsNjU2MzY5MTkzXX0=
 -->
