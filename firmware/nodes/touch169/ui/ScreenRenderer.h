@@ -20,7 +20,7 @@
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
-#include "Navigator.h"
+#include "../core/Navigator.h"
 
 /**
  * ScreenRenderer abstract base class

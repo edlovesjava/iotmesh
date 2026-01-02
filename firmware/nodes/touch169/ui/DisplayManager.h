@@ -21,9 +21,9 @@
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
-#include "Navigator.h"
+#include "../core/Navigator.h"
 #include "ScreenRenderer.h"
-#include "BoardConfig.h"
+#include "../BoardConfig.h"
 
 /**
  * DisplayManager class - manages screen rendering and display state

@@ -23,7 +23,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include "touch/TouchClassCST816.h"
-#include "BoardConfig.h"
+#include "../BoardConfig.h"
 
 class TouchInput {
 public:

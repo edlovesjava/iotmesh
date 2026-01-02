@@ -78,12 +78,12 @@ public:
   /**
    * Get raw motion value string
    */
-  const String& getMotionRaw() const { return _motion; }
+  String getMotionRaw() const override { return _motion; }
 
   /**
    * Get raw LED value string
    */
-  const String& getLedRaw() const { return _led; }
+  String getLedRaw() const override { return _led; }
 
 private:
   static const int MAX_STATE_CALLBACKS = 8;

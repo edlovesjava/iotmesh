@@ -43,17 +43,25 @@
 // Board configuration (pins, colors, geometry, timing)
 #include "BoardConfig.h"
 
-// Extracted classes
-#include "Battery.h"
-#include "TimeSource.h"
-#include "Navigator.h"
-#include "GestureDetector.h"
-#include "SettingsManager.h"
-#include "MeshSwarmAdapter.h"
-#include "DisplayManager.h"
-#include "PowerManager.h"
-#include "TouchInput.h"
-#include "InputManager.h"
+// Core layer
+#include "core/Battery.h"
+#include "core/TimeSource.h"
+#include "core/Navigator.h"
+#include "core/SettingsManager.h"
+
+// Hardware layer
+#include "hardware/GestureDetector.h"
+#include "hardware/PowerManager.h"
+#include "hardware/TouchInput.h"
+#include "hardware/IMU.h"
+
+// Mesh layer
+#include "mesh/MeshSwarmAdapter.h"
+
+// UI layer
+#include "ui/DisplayManager.h"
+#include "ui/InputManager.h"
+#include "ui/screens/DebugScreen.h"
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
@@ -68,6 +76,7 @@ DisplayManager display(tft, navigator, TFT_BL);
 PowerManager power;
 TouchInput touchInput;
 InputManager input(touchInput, gesture);
+IMU imu;
 
 // Touch state (used by processTouchZones)
 int16_t touchX = -1;
@@ -109,8 +118,6 @@ void updateCorners();
 void drawCornerLabels();
 void onPowerOff();            // Power off callback for PowerManager
 void drawBatteryIndicator();  // Uses Battery class
-void drawDebugScreen();
-void updateDebugScreen();
 
 // Input callbacks
 void onTap(int16_t x, int16_t y);
@@ -182,7 +189,18 @@ void setup() {
   battery.begin();
   Serial.println("[TOUCH169] Battery monitoring initialized");
 
-  // Initialize display manager with fallback callbacks
+  // Initialize IMU (QMI8658)
+  if (imu.begin(Wire)) {
+    Serial.println("[TOUCH169] IMU initialized");
+  } else {
+    Serial.println("[TOUCH169] IMU not found (continuing without it)");
+  }
+
+  // Register screen renderers
+  display.registerScreen(new DebugScreen(battery, swarm, imu, meshState));
+  Serial.println("[TOUCH169] DebugScreen registered");
+
+  // Initialize display manager with fallback callbacks for non-migrated screens
   display.setFallbackRenderer(fallbackRender);
   display.setFallbackTouchHandler(fallbackTouchHandler);
   display.begin();
@@ -215,6 +233,7 @@ void loop() {
   swarm.update();
   power.update();    // Check power button (long press = power off)
   battery.update();  // Update battery monitoring
+  imu.update();      // Update IMU readings
   input.update();    // Handle touch and boot button
 
   // Check for sleep timeout
@@ -288,109 +307,6 @@ void drawBatteryIndicator() {
   }
 
   tft.fillRect(indicatorX - 10, indicatorY - 3, fillWidth, 6, fillColor);
-}
-
-// ============== DEBUG SCREEN ==============
-
-void drawDebugScreen() {
-  tft.fillScreen(COLOR_BG);
-  tft.setTextColor(COLOR_TEXT);
-  tft.setTextSize(2);
-  tft.setCursor(60, 10);
-  tft.print("DEBUG INFO");
-
-  tft.drawLine(10, 35, 230, 35, COLOR_TICK);
-}
-
-void updateDebugScreen() {
-  static unsigned long lastUpdate = 0;
-
-  if (navigator.hasChanged()) {
-    navigator.clearChanged();
-    drawDebugScreen();
-    lastUpdate = 0;  // Force immediate update
-  }
-
-  // Update every 500ms
-  if (millis() - lastUpdate < 500) return;
-  lastUpdate = millis();
-
-  float voltage = battery.getVoltage();
-  int percent = battery.getPercent();
-  ChargingState state = battery.getState();
-
-  tft.setTextSize(2);
-
-  // Battery section
-  tft.fillRect(10, 45, 220, 55, COLOR_BG);
-  tft.setTextColor(COLOR_HUMID);
-  tft.setCursor(10, 45);
-  tft.print("Battery:");
-  tft.setTextColor(COLOR_TEXT);
-  tft.setCursor(10, 65);
-  tft.printf("%.2fV  %d%%", voltage, percent);
-
-  // Show charging state
-  tft.setCursor(120, 65);
-  switch (state) {
-    case ChargingState::Charging:
-      tft.setTextColor(COLOR_HUMID);
-      tft.print("[CHARGING]");
-      break;
-    case ChargingState::Full:
-      tft.setTextColor(COLOR_HUMID);
-      tft.print("[FULL]");
-      break;
-    case ChargingState::Discharging:
-      tft.setTextColor(COLOR_TEXT);
-      tft.print("[ON BAT]");
-      break;
-    default:
-      tft.setTextColor(COLOR_TICK);
-      tft.print("[...]");
-      break;
-  }
-
-  // Draw battery bar
-  int barWidth = (percent * 180) / 100;
-  uint16_t barColor = (state == ChargingState::Charging || state == ChargingState::Full)
-                      ? COLOR_HUMID : (percent > 20 ? COLOR_TEXT : COLOR_SECOND);
-  tft.drawRect(10, 90, 184, 12, COLOR_TICK);
-  tft.fillRect(12, 92, barWidth, 8, barColor);
-  tft.fillRect(194, 94, 4, 4, COLOR_TICK);  // Battery nub
-
-  // Mesh info
-  tft.fillRect(10, 110, 220, 80, COLOR_BG);
-  tft.setTextColor(COLOR_TEMP);
-  tft.setCursor(10, 110);
-  tft.print("Mesh:");
-  tft.setTextColor(COLOR_TEXT);
-  tft.setTextSize(1);
-  tft.setCursor(10, 130);
-  tft.printf("Node ID: %u", swarm.getNodeId());
-  tft.setCursor(10, 145);
-  tft.printf("Peers: %d", swarm.getPeerCount());
-  tft.setCursor(10, 160);
-  tft.printf("Role: %s", swarm.isCoordinator() ? "Coordinator" : "Member");
-  tft.setCursor(10, 175);
-  tft.printf("Uptime: %lus", millis() / 1000);
-
-  // Sensor data section
-  tft.setTextSize(2);
-  tft.fillRect(10, 195, 220, 80, COLOR_BG);
-  tft.setTextColor(COLOR_LIGHT);
-  tft.setCursor(10, 195);
-  tft.print("Sensors:");
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_TEXT);
-  tft.setCursor(10, 215);
-  tft.printf("Temp: %s C", meshState.getTemperature().c_str());
-  tft.setCursor(10, 230);
-  tft.printf("Humidity: %s %%", meshState.getHumidity().c_str());
-  tft.setCursor(10, 245);
-  tft.printf("Light: %s", meshState.getLightLevel().c_str());
-  tft.setCursor(10, 260);
-  tft.printf("Motion: %s  LED: %s", meshState.getMotionRaw().c_str(), meshState.getLedRaw().c_str());
 }
 
 // ============== CLOCK FUNCTIONS ==============
@@ -859,9 +775,7 @@ void fallbackRender(Screen screen, TFT_eSPI& tft, Navigator& nav) {
       drawBatteryIndicator();
       break;
 
-    case Screen::Debug:
-      updateDebugScreen();
-      break;
+    // Screen::Debug is now handled by DebugScreen class
 
     // Placeholder for future screens - show screen name
     default:

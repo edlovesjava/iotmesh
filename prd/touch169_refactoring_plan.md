@@ -595,11 +595,12 @@ firmware/nodes/touch169/
 - **Risk:** Low
 - **Status:** Created `TouchInput.h/.cpp` (CST816T wrapper) and `InputManager.h/.cpp` (unified touch/button handling). Uses callback pattern for tap, swipe, touch, and boot button events. main.cpp defines `onTap()`, `onSwipe()`, `onTouch()`, `onBootShortPress()`, `onBootLongPress()` callbacks
 
-### Phase R11: Add IMU
+### Phase R11: Add IMU ✅ COMPLETED
 - Create `IMU` class for QMI8658
 - Add temperature reading to `DebugScreen`
 - **Dependency:** R8 (DebugScreen exists)
 - **Risk:** Low
+- **Status:** Created `IMU.h/.cpp` wrapping SensorQMI8658 with begin(), update(), getTemperature(), getAccel(), getGyro(). Integrated with main.cpp loop and debug screen showing IMU temperature and accelerometer data
 
 **Phase Dependency Graph:**
 
@@ -1469,9 +1470,9 @@ This section documents issues identified during critical review and how they wer
 
 ## Progress Summary
 
-**Completed:** Phases R1-R10 (BoardConfig, Battery, TimeSource, Navigator, GestureDetector, SettingsManager, IMeshState, DisplayManager, PowerManager, InputManager)
+**Completed:** Phases R1-R11 (BoardConfig, Battery, TimeSource, Navigator, GestureDetector, SettingsManager, IMeshState, DisplayManager, PowerManager, InputManager, IMU)
 **In Progress:** None
-**Next:** Phase R11 (IMU) or migrate screens to ScreenRenderer
+**Next:** Migrate individual screens to ScreenRenderer subclasses
 
 **Files Created:**
 - `firmware/nodes/touch169/BoardConfig.h` - Pin definitions, colors, timing constants
@@ -1487,11 +1488,14 @@ This section documents issues identified during critical review and how they wer
 - `firmware/nodes/touch169/PowerManager.h/.cpp` - Power latch, power button handling, power-off
 - `firmware/nodes/touch169/TouchInput.h/.cpp` - CST816T touch controller wrapper
 - `firmware/nodes/touch169/InputManager.h/.cpp` - Unified touch/button input with callbacks
+- `firmware/nodes/touch169/IMU.h/.cpp` - QMI8658 accelerometer/gyroscope/temperature
+- `firmware/nodes/touch169/DebugScreen.h/.cpp` - First ScreenRenderer subclass, shows diagnostics
 
-**main.cpp:** Reduced from ~1400 to ~850 lines
+**main.cpp:** Reduced from ~1400 to ~790 lines
 
 ## Next Steps
 
-1. Phase R11 (IMU) - QMI8658 accelerometer/gyroscope
-2. Future: Migrate individual screens to ScreenRenderer subclasses
+1. Migrate ClockScreen to ScreenRenderer subclass
+2. Migrate detail screens (Temperature, Humidity, Light, MotionLed, etc.)
+3. Future: Composable UI widgets for reusable UI elements
 

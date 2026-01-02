@@ -22,9 +22,9 @@
 #define INPUT_MANAGER_H
 
 #include <Arduino.h>
-#include "TouchInput.h"
-#include "GestureDetector.h"
-#include "BoardConfig.h"
+#include "../hardware/TouchInput.h"
+#include "../hardware/GestureDetector.h"
+#include "../BoardConfig.h"
 
 // Swipe direction for callback (simpler than Gesture enum)
 enum class SwipeDirection {

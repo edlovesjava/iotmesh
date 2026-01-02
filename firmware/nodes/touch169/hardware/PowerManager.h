@@ -19,7 +19,7 @@
 #define POWER_MANAGER_H
 
 #include <Arduino.h>
-#include "BoardConfig.h"
+#include "../BoardConfig.h"
 
 /**
  * Callback type for power off events

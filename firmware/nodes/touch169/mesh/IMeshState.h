@@ -52,9 +52,19 @@ public:
   virtual bool getMotionDetected() const = 0;
 
   /**
+   * Get raw motion value string (for debug display)
+   */
+  virtual String getMotionRaw() const = 0;
+
+  /**
    * Get LED state
    */
   virtual bool getLedState() const = 0;
+
+  /**
+   * Get raw LED value string (for debug display)
+   */
+  virtual String getLedRaw() const = 0;
 
   /**
    * Check if any sensor data has been received

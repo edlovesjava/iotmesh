@@ -10,7 +10,7 @@
 #define BATTERY_H
 
 #include <Arduino.h>
-#include "BoardConfig.h"
+#include "../BoardConfig.h"
 
 // Charging states
 enum class ChargingState {

@@ -12,7 +12,7 @@
 #include <Arduino.h>
 #include <time.h>
 #include <sys/time.h>
-#include "BoardConfig.h"
+#include "../BoardConfig.h"
 
 /**
  * @class TimeSource

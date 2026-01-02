@@ -5,7 +5,7 @@
  */
 
 #include "MeshSwarmAdapter.h"
-#include "TimeSource.h"
+#include "../core/TimeSource.h"
 #include <cstring>
 
 // Static instance pointer for lambda callbacks
