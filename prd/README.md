@@ -46,6 +46,7 @@ Use descriptive names with suffixes indicating document type:
 | [cyd_remote_control_prd.md](cyd_remote_control_prd.md) | Touch-screen remote control |
 | [ir_rf_transmitter_prd.md](ir_rf_transmitter_prd.md) | IR/RF transmitter node |
 | [clock_menu_system_spec.md](clock_menu_system_spec.md) | Clock display menu system |
+| [home_assistant_integration_prd.md](home_assistant_integration_prd.md) | Home Assistant integration |
 
 ### Technical Specifications
 | File | Description |
