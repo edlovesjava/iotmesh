@@ -37,94 +37,50 @@
 #include <TFT_eSPI.h>
 #include <time.h>
 #include <sys/time.h>
+#include <Wire.h>
+// Preferences included via SettingsManager.h
 
-// ============== BUILD-TIME CONFIGURATION ==============
-#ifndef NODE_NAME
-#define NODE_NAME "Touch169"
-#endif
+// Board configuration (pins, colors, geometry, timing)
+#include "BoardConfig.h"
 
-#ifndef NODE_TYPE
-#define NODE_TYPE "touch169"
-#endif
+// Core layer
+#include "core/Battery.h"
+#include "core/TimeSource.h"
+#include "core/Navigator.h"
+#include "core/SettingsManager.h"
 
-// ============== TIMEZONE CONFIG ==============
-#ifndef GMT_OFFSET_SEC
-#define GMT_OFFSET_SEC  -18000  // EST = UTC-5
-#endif
+// Hardware layer
+#include "hardware/GestureDetector.h"
+#include "hardware/PowerManager.h"
+#include "hardware/TouchInput.h"
+#include "hardware/IMU.h"
 
-#ifndef DAYLIGHT_OFFSET
-#define DAYLIGHT_OFFSET 3600    // 1 hour daylight saving
-#endif
+// Mesh layer
+#include "mesh/MeshSwarmAdapter.h"
 
-// ============== DISPLAY PINS (configured in platformio.ini) ==============
-#ifndef TFT_BL
-#define TFT_BL 15
-#endif
-
-// ============== POWER CONTROL PINS ==============
-// Waveshare board has power latch circuit - must hold HIGH to stay powered on battery
-// Old version: GPIO35/36, New version: GPIO41/40
-#ifndef USE_NEW_PIN_CONFIG
-#define USE_NEW_PIN_CONFIG 0  // Set to 1 for newer board revisions
-#endif
-
-#if USE_NEW_PIN_CONFIG
-#define PWR_EN_PIN    41      // Power latch output (new boards)
-#define PWR_BTN_PIN   40      // Power button input (new boards)
-#else
-#define PWR_EN_PIN    35      // Power latch output (old boards)
-#define PWR_BTN_PIN   36      // Power button input (old boards)
-#endif
-
-// ============== BATTERY MONITORING ==============
-#define BAT_ADC_PIN   1       // GPIO1 - battery voltage via divider
-#define BAT_R1        200000.0  // 200k ohm
-#define BAT_R2        100000.0  // 100k ohm
-#define BAT_VREF      3.3       // ADC reference voltage
-
-// ============== BOOT BUTTON (center button for screen toggle) ==============
-#define BOOT_BTN_PIN  0       // GPIO0 - boot button
-
-// ============== DISPLAY GEOMETRY ==============
-#define SCREEN_WIDTH    240
-#define SCREEN_HEIGHT   280
-#define CENTER_X        120
-#define CENTER_Y        140      // Center of display
-#define CLOCK_RADIUS    80       // Clock face radius
-#define HOUR_HAND_LEN   40
-#define MIN_HAND_LEN    55
-#define SEC_HAND_LEN    65
-
-// Corner positions for sensor data
-#define CORNER_MARGIN   8
-#define CORNER_TEXT_H   16
-
-// ============== DISPLAY COLORS (RGB565) ==============
-#define COLOR_BG        0x0000  // Black
-#define COLOR_FACE      0x2104  // Dark gray
-#define COLOR_HOUR      0xFFFF  // White
-#define COLOR_MINUTE    0xFFFF  // White
-#define COLOR_SECOND    0xF800  // Red
-#define COLOR_TEXT      0xFFFF  // White
-#define COLOR_TEMP      0xFD20  // Orange
-#define COLOR_HUMID     0x07E0  // Green
-#define COLOR_LIGHT     0xFFE0  // Yellow
-#define COLOR_MOTION    0x07FF  // Cyan
-#define COLOR_LED       0xF81F  // Magenta
-#define COLOR_TICK      0x8410  // Gray
-#define COLOR_DATE      0xAD55  // Light gray
+// UI layer
+#include "ui/DisplayManager.h"
+#include "ui/InputManager.h"
+#include "ui/screens/DebugScreen.h"
 
 // ============== GLOBALS ==============
 MeshSwarm swarm;
 TFT_eSPI tft = TFT_eSPI();
+SettingsManager settings;
+Battery battery;
+TimeSource timeSource;
+Navigator navigator;
+GestureDetector gesture(SWIPE_MIN_DISTANCE, SWIPE_MAX_CROSS);
+MeshSwarmAdapter meshState(swarm);
+DisplayManager display(tft, navigator, TFT_BL);
+PowerManager power;
+TouchInput touchInput;
+InputManager input(touchInput, gesture);
+IMU imu;
 
-// Sensor data from mesh
-String meshTemp = "--";
-String meshHumid = "--";
-String meshLight = "--";
-String meshMotion = "0";
-String meshLed = "0";
-bool hasSensorData = false;
+// Touch state (used by processTouchZones)
+int16_t touchX = -1;
+int16_t touchY = -1;
 
 // Previous sensor values for efficient redraw
 String prevTemp = "";
@@ -137,50 +93,21 @@ String prevLed = "";
 int lastSec = -1;
 int lastMin = -1;
 int lastHour = -1;
-bool timeValid = false;
-
-// Mesh-based time
-unsigned long meshTimeBase = 0;
-unsigned long meshTimeMillis = 0;
-bool hasMeshTime = false;
 
 // Previous hand positions for efficient redraw
 float prevSecAngle = -999;
 float prevMinAngle = -999;
 float prevHourAngle = -999;
 
-// Battery/charging state
-float voltageHistory[5] = {0, 0, 0, 0, 0};  // Last 5 voltage readings
-int voltageHistoryIdx = 0;
-unsigned long lastVoltageRead = 0;
-enum ChargingState { CHG_UNKNOWN, CHG_CHARGING, CHG_FULL, CHG_DISCHARGING };
-ChargingState chargingState = CHG_UNKNOWN;
-ChargingState prevChargingState = CHG_UNKNOWN;
-#define VOLTAGE_READ_INTERVAL 2000  // Read voltage every 2 seconds
-#define VOLTAGE_FULL_THRESHOLD 4.15  // Consider full above this
-#define VOLTAGE_TREND_THRESHOLD 0.02  // Min voltage change to detect trend
+// Battery indicator state (for redraw optimization)
+bool batteryIndicatorDirty = true;
 
-// Screen state
-enum ScreenMode { SCREEN_CLOCK, SCREEN_DEBUG };
-ScreenMode currentScreen = SCREEN_CLOCK;
-bool screenChanged = true;
+// Screen state (Navigator class manages currentScreen, previousScreen, screenChanged)
 bool firstDraw = true;
 
-// Power button state (long press to power off)
-unsigned long pwrBtnPressTime = 0;
-bool pwrBtnWasPressed = false;
-#define PWR_BTN_LONG_PRESS_MS 2000  // Hold 2 seconds to power off
-
-// Boot button state (short press to toggle screens)
-unsigned long bootBtnPressTime = 0;
-bool bootBtnWasPressed = false;
-bool bootBtnShortPress = false;
-#define BOOT_BTN_DEBOUNCE_MS  50
-
-// Display sleep state
-bool displayAsleep = false;
-unsigned long lastActivityTime = 0;
-#define DISPLAY_SLEEP_TIMEOUT_MS  30000  // 30 seconds to sleep
+// Power button state managed by PowerManager
+// Boot button state managed by InputManager
+// Display sleep state managed by DisplayManager
 
 // ============== FUNCTION DECLARATIONS ==============
 void drawClockFace();
@@ -189,33 +116,27 @@ void eraseHand(float angle, int length, int width);
 void updateClock();
 void updateCorners();
 void drawCornerLabels();
-void setMeshTime(unsigned long unixTime);
-bool getMeshTime(struct tm* timeinfo);
-void checkPowerButton();
-void checkBootButton();
-void powerOff();
-float readBatteryVoltage();
-int batteryPercent(float voltage);
-void updateChargingState();
-const char* getChargingStateStr();
-void drawChargingIndicator();
-void drawDebugScreen();
-void updateDebugScreen();
-void displaySleep();
-void displayWake();
-void resetActivityTimer();
+void onPowerOff();            // Power off callback for PowerManager
+void drawBatteryIndicator();  // Uses Battery class
+
+// Input callbacks
+void onTap(int16_t x, int16_t y);
+void onSwipe(SwipeDirection dir);
+void onTouch();
+void onBootShortPress();
+void onBootLongPress();
+
+// Fallback rendering for screens not yet migrated to ScreenRenderer
+void fallbackRender(Screen screen, TFT_eSPI& tft, Navigator& nav);
+bool fallbackTouchHandler(Screen screen, int16_t x, int16_t y, Navigator& nav);
+
+// Navigation functions (Phase 1.1) - uses Navigator class
+void processTouchZones();
 
 // ============== SETUP ==============
 void setup() {
-  // CRITICAL: Latch power immediately to stay on when running from battery
-  pinMode(PWR_EN_PIN, OUTPUT);
-  digitalWrite(PWR_EN_PIN, HIGH);
-
-  // Setup power button input
-  pinMode(PWR_BTN_PIN, INPUT);
-
-  // Setup boot button (GPIO0) with internal pullup
-  pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
+  // CRITICAL: Initialize power management FIRST to latch power on battery
+  power.begin();
 
   Serial.begin(115200);
   delay(1000);
@@ -225,12 +146,27 @@ void setup() {
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
 
+  // Initialize I2C for touch controller (separate from display SPI)
+  Wire.begin(TOUCH_SDA, TOUCH_SCL);
+  Serial.printf("[TOUCH169] I2C initialized on SDA=%d, SCL=%d\n", TOUCH_SDA, TOUCH_SCL);
+
   // Initialize display
   tft.init();
   tft.setRotation(0);  // Portrait mode
   tft.fillScreen(COLOR_BG);
 
   Serial.println("[TOUCH169] Display initialized");
+
+  // Initialize touch controller
+  if (touchInput.begin(Wire)) {
+    Serial.println("[TOUCH169] Touch controller initialized");
+  } else {
+    Serial.println("[TOUCH169] Touch controller FAILED");
+  }
+
+  // Initialize settings manager (loads from flash, increments boot count)
+  settings.begin();
+  Serial.printf("[TOUCH169] Settings initialized, boot count: %d\n", settings.getBootCount());
 
   // Show startup message
   tft.setTextColor(COLOR_TEXT);
@@ -242,65 +178,46 @@ void setup() {
   swarm.begin(NODE_NAME);
   swarm.enableTelemetry(true);
   swarm.enableOTAReceive(NODE_TYPE);
-
   Serial.println("[TOUCH169] MeshSwarm initialized");
 
-  // Watch for sensor data from mesh
-  swarm.watchState("temp", [](const String& key, const String& value, const String& oldValue) {
-    meshTemp = value;
-    hasSensorData = true;
-    Serial.printf("[TOUCH169] Temperature: %s C\n", value.c_str());
-  });
+  // Initialize mesh state adapter (registers watchers for sensor data)
+  meshState.setTimeSource(&timeSource);
+  meshState.begin();
+  Serial.println("[TOUCH169] MeshState adapter initialized");
 
-  swarm.watchState("humidity", [](const String& key, const String& value, const String& oldValue) {
-    meshHumid = value;
-    hasSensorData = true;
-    Serial.printf("[TOUCH169] Humidity: %s %%\n", value.c_str());
-  });
+  // Initialize battery monitoring
+  battery.begin();
+  Serial.println("[TOUCH169] Battery monitoring initialized");
 
-  swarm.watchState("light", [](const String& key, const String& value, const String& oldValue) {
-    meshLight = value;
-    hasSensorData = true;
-    Serial.printf("[TOUCH169] Light: %s\n", value.c_str());
-  });
+  // Initialize IMU (QMI8658)
+  if (imu.begin(Wire)) {
+    Serial.println("[TOUCH169] IMU initialized");
+  } else {
+    Serial.println("[TOUCH169] IMU not found (continuing without it)");
+  }
 
-  swarm.watchState("motion", [](const String& key, const String& value, const String& oldValue) {
-    meshMotion = value;
-    Serial.printf("[TOUCH169] Motion: %s\n", value.c_str());
-  });
+  // Register screen renderers
+  display.registerScreen(new DebugScreen(battery, swarm, imu, meshState));
+  Serial.println("[TOUCH169] DebugScreen registered");
 
-  swarm.watchState("led", [](const String& key, const String& value, const String& oldValue) {
-    meshLed = value;
-    Serial.printf("[TOUCH169] LED: %s\n", value.c_str());
-  });
+  // Initialize display manager with fallback callbacks for non-migrated screens
+  display.setFallbackRenderer(fallbackRender);
+  display.setFallbackTouchHandler(fallbackTouchHandler);
+  display.begin();
+  Serial.println("[TOUCH169] DisplayManager initialized");
 
-  // Watch for time sync from gateway
-  swarm.watchState("time", [](const String& key, const String& value, const String& oldValue) {
-    unsigned long unixTime = value.toInt();
-    if (unixTime > 1700000000) {
-      setMeshTime(unixTime);
-      Serial.printf("[TOUCH169] Time synced: %lu\n", unixTime);
-    }
-  });
+  // Set power off callback to show message before power down
+  power.onPowerOff(onPowerOff);
+  Serial.println("[TOUCH169] PowerManager callback set");
 
-  // Wildcard watcher for zone-specific sensors
-  swarm.watchState("*", [](const String& key, const String& value, const String& oldValue) {
-    if (key.startsWith("temp_") && meshTemp == "--") {
-      meshTemp = value;
-      hasSensorData = true;
-    }
-    if (key.startsWith("humidity_") && meshHumid == "--") {
-      meshHumid = value;
-      hasSensorData = true;
-    }
-    if (key.startsWith("light_") && meshLight == "--") {
-      meshLight = value;
-      hasSensorData = true;
-    }
-    if (key.startsWith("motion_")) {
-      meshMotion = value;
-    }
-  });
+  // Initialize input manager with callbacks
+  input.onTap(onTap);
+  input.onSwipe(onSwipe);
+  input.onTouch(onTouch);
+  input.onBootShortPress(onBootShortPress);
+  input.onBootLongPress(onBootLongPress);
+  input.begin();
+  Serial.println("[TOUCH169] InputManager initialized");
 
   // Clear startup message and draw clock
   delay(500);
@@ -308,58 +225,28 @@ void setup() {
   drawClockFace();
   drawCornerLabels();
 
-  // Initialize activity timer
-  resetActivityTimer();
-
   Serial.println("[TOUCH169] Ready");
 }
 
 // ============== MAIN LOOP ==============
 void loop() {
   swarm.update();
-  checkPowerButton();
-  checkBootButton();
-  updateChargingState();
-
-  // Handle boot button short press
-  if (bootBtnShortPress) {
-    bootBtnShortPress = false;
-
-    if (displayAsleep) {
-      // Wake up display on button press
-      displayWake();
-    } else {
-      // Toggle screens when awake
-      currentScreen = (currentScreen == SCREEN_CLOCK) ? SCREEN_DEBUG : SCREEN_CLOCK;
-      screenChanged = true;
-      resetActivityTimer();
-      Serial.printf("[TOUCH169] Switched to %s screen\n",
-                    currentScreen == SCREEN_CLOCK ? "clock" : "debug");
-    }
-  }
+  power.update();    // Check power button (long press = power off)
+  battery.update();  // Update battery monitoring
+  imu.update();      // Update IMU readings
+  input.update();    // Handle touch and boot button
 
   // Check for sleep timeout
-  if (!displayAsleep && (millis() - lastActivityTime >= DISPLAY_SLEEP_TIMEOUT_MS)) {
-    displaySleep();
-  }
+  display.checkSleepTimeout();
 
-  // Only update display if awake
-  if (!displayAsleep) {
-    if (currentScreen == SCREEN_CLOCK) {
-      updateClock();
-      updateCorners();
-      drawChargingIndicator();
-    } else {
-      updateDebugScreen();
-    }
-  }
+  // Render current screen (DisplayManager checks if asleep)
+  display.render();
 }
 
 // ============== POWER MANAGEMENT ==============
 
-void powerOff() {
-  Serial.println("[TOUCH169] Powering off...");
-
+// Power off callback - shows message and turns off backlight
+void onPowerOff() {
   // Show power off message
   tft.fillScreen(COLOR_BG);
   tft.setTextColor(COLOR_TEXT);
@@ -370,139 +257,25 @@ void powerOff() {
 
   // Turn off backlight
   digitalWrite(TFT_BL, LOW);
-
-  // Release power latch - this will cut power on battery
-  digitalWrite(PWR_EN_PIN, LOW);
-
-  // If on USB power, we won't actually power off, so just wait
-  delay(2000);
-
-  // If still running (USB powered), restart instead
-  Serial.println("[TOUCH169] Still powered (USB?), restarting...");
-  ESP.restart();
-}
-
-void checkPowerButton() {
-  bool btnPressed = digitalRead(PWR_BTN_PIN) == LOW;  // Active low
-  unsigned long now = millis();
-
-  if (btnPressed && !pwrBtnWasPressed) {
-    // Button just pressed
-    pwrBtnPressTime = now;
-    pwrBtnWasPressed = true;
-  } else if (btnPressed && pwrBtnWasPressed) {
-    // Button held - check for long press to power off
-    if (now - pwrBtnPressTime >= PWR_BTN_LONG_PRESS_MS) {
-      powerOff();
-    }
-  } else if (!btnPressed && pwrBtnWasPressed) {
-    // Button released
-    pwrBtnWasPressed = false;
-  }
-}
-
-void checkBootButton() {
-  bool btnPressed = digitalRead(BOOT_BTN_PIN) == LOW;  // Active low (has pullup)
-  unsigned long now = millis();
-
-  if (btnPressed && !bootBtnWasPressed) {
-    // Button just pressed
-    bootBtnPressTime = now;
-    bootBtnWasPressed = true;
-  } else if (!btnPressed && bootBtnWasPressed) {
-    // Button released - check for valid press duration
-    unsigned long pressDuration = now - bootBtnPressTime;
-    if (pressDuration >= BOOT_BTN_DEBOUNCE_MS) {
-      bootBtnShortPress = true;
-    }
-    bootBtnWasPressed = false;
-  }
 }
 
 // ============== BATTERY FUNCTIONS ==============
 
-float readBatteryVoltage() {
-  int adcValue = analogRead(BAT_ADC_PIN);
-  float voltage = (float)adcValue * (BAT_VREF / 4095.0);
-  float actualVoltage = voltage * ((BAT_R1 + BAT_R2) / BAT_R2);
-  return actualVoltage;
-}
-
-int batteryPercent(float voltage) {
-  // LiPo voltage range: 3.0V (empty) to 4.2V (full)
-  // Linear approximation
-  if (voltage >= 4.2) return 100;
-  if (voltage <= 3.0) return 0;
-  return (int)((voltage - 3.0) / 1.2 * 100);
-}
-
-void updateChargingState() {
-  // Update voltage readings periodically
-  if (millis() - lastVoltageRead < VOLTAGE_READ_INTERVAL) return;
-  lastVoltageRead = millis();
-
-  float voltage = readBatteryVoltage();
-  voltageHistory[voltageHistoryIdx] = voltage;
-  voltageHistoryIdx = (voltageHistoryIdx + 1) % 5;
-
-  // Need at least 5 samples to determine trend
-  static int sampleCount = 0;
-  if (sampleCount < 5) {
-    sampleCount++;
-    return;
-  }
-
-  // Calculate average of first half vs second half to determine trend
-  float older = (voltageHistory[(voltageHistoryIdx + 0) % 5] +
-                 voltageHistory[(voltageHistoryIdx + 1) % 5]) / 2.0;
-  float newer = (voltageHistory[(voltageHistoryIdx + 3) % 5] +
-                 voltageHistory[(voltageHistoryIdx + 4) % 5]) / 2.0;
-  float trend = newer - older;
-
-  // Determine charging state
-  ChargingState newState;
-  if (voltage >= VOLTAGE_FULL_THRESHOLD && abs(trend) < VOLTAGE_TREND_THRESHOLD) {
-    newState = CHG_FULL;
-  } else if (trend > VOLTAGE_TREND_THRESHOLD) {
-    newState = CHG_CHARGING;
-  } else if (trend < -VOLTAGE_TREND_THRESHOLD) {
-    newState = CHG_DISCHARGING;
-  } else if (voltage >= VOLTAGE_FULL_THRESHOLD) {
-    newState = CHG_FULL;
-  } else {
-    // Stable voltage below full - likely on USB but not charging (trickle or full)
-    newState = (voltage > 4.0) ? CHG_FULL : CHG_DISCHARGING;
-  }
-
-  if (newState != chargingState) {
-    chargingState = newState;
-    Serial.printf("[TOUCH169] Charging state: %s (%.2fV, trend: %+.3fV)\n",
-                  getChargingStateStr(), voltage, trend);
-  }
-}
-
-const char* getChargingStateStr() {
-  switch (chargingState) {
-    case CHG_CHARGING:    return "Charging";
-    case CHG_FULL:        return "Full";
-    case CHG_DISCHARGING: return "Discharging";
-    default:              return "Unknown";
-  }
-}
-
-void drawChargingIndicator() {
+void drawBatteryIndicator() {
   // Only redraw when state changes
-  if (chargingState == prevChargingState) return;
-  prevChargingState = chargingState;
+  if (!battery.stateChanged() && !batteryIndicatorDirty) return;
+  batteryIndicatorDirty = false;
 
-  // Draw indicator in top-center area (below date)
+  ChargingState state = battery.getState();
+
+  // Draw indicator above digital time display (bottom center)
   int indicatorX = CENTER_X;
-  int indicatorY = 45;
+  int indicatorY = SCREEN_HEIGHT - 42;  // Above digital time at SCREEN_HEIGHT - 28
 
   // Clear previous indicator area
   tft.fillRect(indicatorX - 20, indicatorY - 8, 40, 16, COLOR_BG);
 
-  if (chargingState == CHG_UNKNOWN) return;
+  if (state == ChargingState::Unknown) return;
 
   // Draw battery outline
   tft.drawRect(indicatorX - 12, indicatorY - 5, 20, 10, COLOR_TEXT);
@@ -510,24 +283,22 @@ void drawChargingIndicator() {
 
   // Fill based on state
   uint16_t fillColor;
-  int fillWidth;
-  float voltage = readBatteryVoltage();
-  int percent = batteryPercent(voltage);
-  fillWidth = (percent * 16) / 100;
+  int percent = battery.getPercent();
+  int fillWidth = (percent * 16) / 100;
 
-  switch (chargingState) {
-    case CHG_CHARGING:
+  switch (state) {
+    case ChargingState::Charging:
       fillColor = COLOR_HUMID;  // Green when charging
-      // Draw lightning bolt symbol
+      // Draw plus symbol
       tft.setTextColor(COLOR_HUMID, COLOR_BG);
       tft.setTextSize(1);
       tft.setCursor(indicatorX - 18, indicatorY - 4);
       tft.print("+");
       break;
-    case CHG_FULL:
+    case ChargingState::Full:
       fillColor = COLOR_HUMID;  // Green when full
       break;
-    case CHG_DISCHARGING:
+    case ChargingState::Discharging:
       fillColor = (percent > 20) ? COLOR_TEXT : COLOR_SECOND;  // White or red when low
       break;
     default:
@@ -536,110 +307,6 @@ void drawChargingIndicator() {
   }
 
   tft.fillRect(indicatorX - 10, indicatorY - 3, fillWidth, 6, fillColor);
-}
-
-// ============== DEBUG SCREEN ==============
-
-void drawDebugScreen() {
-  tft.fillScreen(COLOR_BG);
-  tft.setTextColor(COLOR_TEXT);
-  tft.setTextSize(2);
-  tft.setCursor(60, 10);
-  tft.print("DEBUG INFO");
-
-  tft.drawLine(10, 35, 230, 35, COLOR_TICK);
-}
-
-void updateDebugScreen() {
-  static unsigned long lastUpdate = 0;
-  static float lastVoltage = 0;
-
-  if (screenChanged) {
-    screenChanged = false;
-    drawDebugScreen();
-    lastUpdate = 0;  // Force immediate update
-    lastVoltage = 0;
-  }
-
-  // Update every 500ms
-  if (millis() - lastUpdate < 500) return;
-  lastUpdate = millis();
-
-  float voltage = readBatteryVoltage();
-  int percent = batteryPercent(voltage);
-
-  tft.setTextSize(2);
-
-  // Battery section
-  tft.fillRect(10, 45, 220, 55, COLOR_BG);
-  tft.setTextColor(COLOR_HUMID);
-  tft.setCursor(10, 45);
-  tft.print("Battery:");
-  tft.setTextColor(COLOR_TEXT);
-  tft.setCursor(10, 65);
-  tft.printf("%.2fV  %d%%", voltage, percent);
-
-  // Show charging state
-  tft.setCursor(120, 65);
-  switch (chargingState) {
-    case CHG_CHARGING:
-      tft.setTextColor(COLOR_HUMID);
-      tft.print("[CHARGING]");
-      break;
-    case CHG_FULL:
-      tft.setTextColor(COLOR_HUMID);
-      tft.print("[FULL]");
-      break;
-    case CHG_DISCHARGING:
-      tft.setTextColor(COLOR_TEXT);
-      tft.print("[ON BAT]");
-      break;
-    default:
-      tft.setTextColor(COLOR_TICK);
-      tft.print("[...]");
-      break;
-  }
-
-  // Draw battery bar
-  int barWidth = (percent * 180) / 100;
-  uint16_t barColor = (chargingState == CHG_CHARGING || chargingState == CHG_FULL)
-                      ? COLOR_HUMID : (percent > 20 ? COLOR_TEXT : COLOR_SECOND);
-  tft.drawRect(10, 90, 184, 12, COLOR_TICK);
-  tft.fillRect(12, 92, barWidth, 8, barColor);
-  tft.fillRect(194, 94, 4, 4, COLOR_TICK);  // Battery nub
-
-  // Mesh info
-  tft.fillRect(10, 110, 220, 80, COLOR_BG);
-  tft.setTextColor(COLOR_TEMP);
-  tft.setCursor(10, 110);
-  tft.print("Mesh:");
-  tft.setTextColor(COLOR_TEXT);
-  tft.setTextSize(1);
-  tft.setCursor(10, 130);
-  tft.printf("Node ID: %u", swarm.getNodeId());
-  tft.setCursor(10, 145);
-  tft.printf("Peers: %d", swarm.getPeerCount());
-  tft.setCursor(10, 160);
-  tft.printf("Role: %s", swarm.isCoordinator() ? "Coordinator" : "Member");
-  tft.setCursor(10, 175);
-  tft.printf("Uptime: %lus", millis() / 1000);
-
-  // Sensor data section
-  tft.setTextSize(2);
-  tft.fillRect(10, 195, 220, 80, COLOR_BG);
-  tft.setTextColor(COLOR_LIGHT);
-  tft.setCursor(10, 195);
-  tft.print("Sensors:");
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_TEXT);
-  tft.setCursor(10, 215);
-  tft.printf("Temp: %s C", meshTemp.c_str());
-  tft.setCursor(10, 230);
-  tft.printf("Humidity: %s %%", meshHumid.c_str());
-  tft.setCursor(10, 245);
-  tft.printf("Light: %s", meshLight.c_str());
-  tft.setCursor(10, 260);
-  tft.printf("Motion: %s  LED: %s", meshMotion.c_str(), meshLed.c_str());
 }
 
 // ============== CLOCK FUNCTIONS ==============
@@ -695,8 +362,8 @@ void updateClock() {
   struct tm timeinfo;
 
   // Handle screen change
-  if (screenChanged) {
-    screenChanged = false;
+  if (navigator.hasChanged()) {
+    navigator.clearChanged();
     tft.fillScreen(COLOR_BG);
     drawClockFace();
     drawCornerLabels();
@@ -707,12 +374,18 @@ void updateClock() {
     prevMinAngle = -999;
     prevHourAngle = -999;
     firstDraw = true;
+    // Reset corner prev values to force redraw with current sensor data
+    prevTemp = "";
+    prevHumid = "";
+    prevLight = "";
+    prevMotion = "";
+    prevLed = "";
   }
 
-  // Try mesh time first, then NTP
-  if (!getMeshTime(&timeinfo) && !getLocalTime(&timeinfo)) {
+  // Try to get time from TimeSource
+  if (!timeSource.getTime(&timeinfo)) {
     // Time not yet synced - show waiting message
-    if (!timeValid) {
+    if (!timeSource.isValid()) {
       static unsigned long lastDot = 0;
       static int dots = 0;
       if (millis() - lastDot > 500) {
@@ -730,8 +403,8 @@ void updateClock() {
   }
 
   // Time is valid
-  if (!timeValid) {
-    timeValid = true;
+  if (!timeSource.isValid()) {
+    timeSource.markValid();
     tft.fillScreen(COLOR_BG);
     drawClockFace();
     drawCornerLabels();
@@ -784,17 +457,25 @@ void updateClock() {
   prevHourAngle = hourAngle;
 
   // Update date display at top center (once per minute)
+  // Two lines: day of week on top, month + day below
   if (min != lastMin || lastMin == -1) {
     const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     const char* days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 
-    // Clear date area (between corner labels)
-    tft.fillRect(60, CORNER_MARGIN, 120, 20, COLOR_BG);
-    tft.setTextSize(1);
+    // Clear date area (between corner labels) - taller for two lines
+    tft.fillRect(80, CORNER_MARGIN, 80, 36, COLOR_BG);
+    tft.setTextSize(2);
     tft.setTextColor(COLOR_DATE, COLOR_BG);
-    tft.setCursor(75, CORNER_MARGIN + 4);
-    tft.printf("%s %s %d", days[timeinfo.tm_wday], months[timeinfo.tm_mon], timeinfo.tm_mday);
+    // Line 1: Day of week centered
+    tft.setCursor(96, CORNER_MARGIN);
+    tft.print(days[timeinfo.tm_wday]);
+    // Line 2: Month + day centered
+    char dateBuf[8];
+    snprintf(dateBuf, sizeof(dateBuf), "%s %d", months[timeinfo.tm_mon], timeinfo.tm_mday);
+    int dateWidth = strlen(dateBuf) * 12;  // ~12px per char at size 2
+    tft.setCursor(120 - dateWidth / 2, CORNER_MARGIN + 18);
+    tft.print(dateBuf);
   }
 
   // Digital time at bottom center
@@ -842,6 +523,13 @@ void drawCornerLabels() {
 }
 
 void updateCorners() {
+  // Get current values from mesh state adapter
+  String meshHumid = meshState.getHumidity();
+  String meshTemp = meshState.getTemperature();
+  String meshLight = meshState.getLightLevel();
+  String meshMotion = meshState.getMotionRaw();
+  String meshLed = meshState.getLedRaw();
+
   // Top-left: Humidity
   if (meshHumid != prevHumid) {
     prevHumid = meshHumid;
@@ -912,65 +600,206 @@ void updateCorners() {
   }
 }
 
-// ============== MESH TIME FUNCTIONS ==============
+// ============== INPUT CALLBACKS ==============
 
-void setMeshTime(unsigned long unixTime) {
-  meshTimeBase = unixTime;
-  meshTimeMillis = millis();
-  hasMeshTime = true;
-
-  // Also set the system time so getLocalTime() works
-  struct timeval tv;
-  tv.tv_sec = unixTime;
-  tv.tv_usec = 0;
-  settimeofday(&tv, NULL);
+void onTap(int16_t x, int16_t y) {
+  touchX = x;
+  touchY = y;
+  processTouchZones();
 }
 
-bool getMeshTime(struct tm* timeinfo) {
-  if (!hasMeshTime) return false;
+void onSwipe(SwipeDirection dir) {
+  switch (dir) {
+    case SwipeDirection::Down:
+      // Swipe down on clock screen opens nav menu
+      if (navigator.current() == Screen::Clock) {
+        navigator.navigateTo(Screen::NavMenu);
+        display.resetActivityTimer();
+      }
+      break;
 
-  // Calculate current time based on mesh time + elapsed millis
-  unsigned long elapsed = (millis() - meshTimeMillis) / 1000;
-  time_t currentTime = meshTimeBase + elapsed + GMT_OFFSET_SEC + DAYLIGHT_OFFSET;
+    case SwipeDirection::Up:
+      // Swipe up on nav menu closes it
+      if (navigator.current() == Screen::NavMenu) {
+        navigator.navigateBack();
+        display.resetActivityTimer();
+      }
+      break;
 
-  // Convert to struct tm
-  struct tm* t = localtime(&currentTime);
-  if (t) {
-    memcpy(timeinfo, t, sizeof(struct tm));
-    return true;
+    default:
+      // SwipeLeft, SwipeRight - not used yet
+      break;
   }
-  return false;
 }
 
-// ============== DISPLAY SLEEP FUNCTIONS ==============
-
-void resetActivityTimer() {
-  lastActivityTime = millis();
+void onTouch() {
+  // Wake display on any touch
+  if (display.isAsleep()) {
+    display.wake();
+    input.cancelTouch();  // Don't process gesture when waking
+    Serial.println("[TOUCH169] Touch wake");
+    return;
+  }
+  display.resetActivityTimer();
 }
 
-void displaySleep() {
-  if (displayAsleep) return;
-
-  displayAsleep = true;
-  Serial.println("[TOUCH169] Display sleeping...");
-
-  // Turn off backlight to save power
-  digitalWrite(TFT_BL, LOW);
+void onBootShortPress() {
+  if (display.isAsleep()) {
+    display.wake();
+  } else {
+    navigator.navigateBack();
+    display.resetActivityTimer();
+  }
 }
 
-void displayWake() {
-  if (!displayAsleep) return;
+void onBootLongPress() {
+  if (!display.isAsleep()) {
+    navigator.navigateTo(Screen::Debug);
+    display.resetActivityTimer();
+  }
+}
 
-  displayAsleep = false;
-  Serial.println("[TOUCH169] Display waking...");
+// ============== NAVIGATION FUNCTIONS (Phase 1.1 - uses Navigator class) ==============
 
-  // Turn on backlight
-  digitalWrite(TFT_BL, HIGH);
+void processTouchZones() {
+  // Touch zone detection based on spec coordinates
+  // Clock screen touch zones (from touch169_touch_navigation_spec.md):
+  // | Top-Left     | (0,0)     | 80x60   | Humidity Detail    |
+  // | Top-Center   | (80,0)    | 80x40   | Calendar           |
+  // | Top-Right    | (160,0)   | 80x60   | Temperature Detail |
+  // | Bottom-Left  | (0,210)   | 80x50   | Light Detail       |
+  // | Bottom-Right | (160,210) | 80x50   | Motion/LED Detail  |
+  // | Center       | (60,80)   | 120x120 | Clock Details      |
+  // Nav menu: Swipe down from clock screen (handled in handleTouch)
 
-  // Force screen redraw
-  screenChanged = true;
-  prevChargingState = CHG_UNKNOWN;  // Force battery indicator redraw
+  Screen current = navigator.current();
 
-  // Reset activity timer
-  resetActivityTimer();
+  if (current == Screen::Clock) {
+    // Top-Left: Humidity (0,0) 80x60
+    if (touchX >= 0 && touchX < 80 && touchY >= 0 && touchY < 60) {
+      navigator.navigateTo(Screen::Humidity);
+      display.resetActivityTimer();
+      return;
+    }
+    // Top-Center: Calendar (80,0) 80x40
+    if (touchX >= 80 && touchX < 160 && touchY >= 0 && touchY < 40) {
+      navigator.navigateTo(Screen::Calendar);
+      display.resetActivityTimer();
+      return;
+    }
+    // Top-Right: Temperature (160,0) 80x60
+    if (touchX >= 160 && touchX < 240 && touchY >= 0 && touchY < 60) {
+      navigator.navigateTo(Screen::Temperature);
+      display.resetActivityTimer();
+      return;
+    }
+    // Bottom-Left: Light (0,210) 80x50
+    if (touchX >= 0 && touchX < 80 && touchY >= 210 && touchY < 260) {
+      navigator.navigateTo(Screen::Light);
+      display.resetActivityTimer();
+      return;
+    }
+    // Bottom-Right: Motion/LED (160,210) 80x50
+    if (touchX >= 160 && touchX < 240 && touchY >= 210 && touchY < 260) {
+      navigator.navigateTo(Screen::MotionLed);
+      display.resetActivityTimer();
+      return;
+    }
+    // Center: Clock Details (60,80) 120x120
+    if (touchX >= 60 && touchX < 180 && touchY >= 80 && touchY < 200) {
+      navigator.navigateTo(Screen::ClockDetails);
+      display.resetActivityTimer();
+      return;
+    }
+  }
+  // Navigation menu - back arrow or tap outside to close
+  else if (current == Screen::NavMenu) {
+    // Back Arrow - enlarged zone (0,0) 100x60 for easier tapping
+    if (touchX >= 0 && touchX < 100 && touchY >= 0 && touchY < 60) {
+      navigator.navigateBack();
+      display.resetActivityTimer();
+      return;
+    }
+    // TODO: Add nav menu grid buttons here in future phase
+  }
+  // Detail screen header zones (all other detail screens)
+  else if (current != Screen::Debug) {
+    // Back Arrow - enlarged zone (0,0) 100x60 for easier tapping
+    if (touchX >= 0 && touchX < 100 && touchY >= 0 && touchY < 60) {
+      navigator.navigateBack();
+      display.resetActivityTimer();
+      return;
+    }
+    // Gear Icon - enlarged zone (180,0) 60x60 for easier tapping
+    if (touchX >= 180 && touchX < 240 && touchY >= 0 && touchY < 60) {
+      switch (current) {
+        case Screen::Humidity:
+          navigator.navigateTo(Screen::HumiditySettings);
+          break;
+        case Screen::Temperature:
+          navigator.navigateTo(Screen::TempSettings);
+          break;
+        case Screen::Light:
+          navigator.navigateTo(Screen::LightSettings);
+          break;
+        case Screen::MotionLed:
+          navigator.navigateTo(Screen::MotionLedSettings);
+          break;
+        case Screen::Calendar:
+          navigator.navigateTo(Screen::DateSettings);
+          break;
+        case Screen::ClockDetails:
+          navigator.navigateTo(Screen::TimeSettings);
+          break;
+        default:
+          break;
+      }
+      display.resetActivityTimer();
+      return;
+    }
+  }
+}
+
+// ============== FALLBACK FUNCTIONS FOR DISPLAYMANAGER ==============
+// These handle screens not yet migrated to ScreenRenderer classes
+
+void fallbackRender(Screen screen, TFT_eSPI& tft, Navigator& nav) {
+  // Route to existing render functions
+  switch (screen) {
+    case Screen::Clock:
+      if (nav.hasChanged()) {
+        batteryIndicatorDirty = true;  // Force redraw when entering screen
+      }
+      updateClock();
+      updateCorners();
+      drawBatteryIndicator();
+      break;
+
+    // Screen::Debug is now handled by DebugScreen class
+
+    // Placeholder for future screens - show screen name
+    default:
+      if (nav.hasChanged()) {
+        nav.clearChanged();
+        tft.fillScreen(COLOR_BG);
+        tft.setTextColor(COLOR_TEXT);
+        tft.setTextSize(2);
+        tft.setCursor(20, 20);
+        tft.printf("< %s", Navigator::getScreenName(screen));
+        tft.setTextSize(1);
+        tft.setCursor(20, 60);
+        tft.print("Screen not yet implemented");
+        tft.setCursor(20, 80);
+        tft.print("Press boot button to go back");
+      }
+      break;
+  }
+}
+
+bool fallbackTouchHandler(Screen screen, int16_t x, int16_t y, Navigator& nav) {
+  // Route to existing touch handler (processTouchZones uses global touchX/touchY)
+  touchX = x;
+  touchY = y;
+  processTouchZones();
+  return true;  // Always claim touch was handled
 }
